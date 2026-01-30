@@ -401,10 +401,10 @@ export const DIRECTION_METADATA: Record<MedicineWheelDirection, DirectionMetadat
 };
 
 export const INTENT_VERBS: Record<IntentType, string[]> = {
-  CREATION: ['create', 'generate', 'build', 'make', 'write', 'design', 'develop'],
-  MODIFICATION: ['update', 'modify', 'change', 'refactor', 'edit', 'fix', 'improve'],
-  ANALYSIS: ['analyze', 'investigate', 'understand', 'research', 'explore', 'find', 'examine'],
-  VALIDATION: ['test', 'verify', 'validate', 'check', 'ensure', 'confirm', 'audit'],
-  INTEGRATION: ['integrate', 'connect', 'link', 'combine', 'merge', 'sync', 'bridge'],
-  COMMUNICATION: ['report', 'notify', 'document', 'log', 'alert', 'summarize', 'present']
+  CREATION: ['create', 'generate', 'build', 'make', 'write', 'design', 'develop', 'scaffold', 'implement', 'draft', 'forge', 'compose', 'craft'],
+  MODIFICATION: ['update', 'modify', 'change', 'refactor', 'edit', 'fix', 'improve', 'optimize', 'tweak', 'adjust', 'patch', 'revise', 'enhance', 'upgrade'],
+  ANALYSIS: ['analyze', 'investigate', 'understand', 'research', 'explore', 'find', 'examine', 'scan', 'parse', 'decode', 'inspect', 'monitor', 'assess', 'evaluate', 'review'],
+  VALIDATION: ['test', 'verify', 'validate', 'check', 'ensure', 'confirm', 'audit', 'benchmark', 'lint', 'debug', 'prove', 'certify'],
+  INTEGRATION: ['integrate', 'connect', 'link', 'combine', 'merge', 'sync', 'bridge', 'bind', 'map', 'route', 'orchestrate', 'fuse', 'weave'],
+  COMMUNICATION: ['report', 'notify', 'document', 'log', 'alert', 'summarize', 'present', 'announce', 'publish', 'broadcast', 'narrate', 'explain', 'describe']
 };

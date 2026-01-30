@@ -175,14 +175,35 @@ export class PdeEngine {
 
   private extractTarget(words: string[], verbIndex: number): string {
     // Look for the next significant word after the verb
-    const stopWords = new Set(['a', 'an', 'the', 'with', 'for', 'to', 'and', 'or', 'in', 'on']);
-    for (let i = verbIndex + 1; i < Math.min(verbIndex + 5, words.length); i++) {
-      const word = words[i].replace(/[^a-z]/g, '');
-      if (word.length > 2 && !stopWords.has(word)) {
-        return word;
+    const stopWords = new Set([
+      'a', 'an', 'the', 'with', 'for', 'to', 'and', 'or', 'in', 'on',
+      'its', 'my', 'our', 'their', 'your', 'his', 'her', // Pronouns
+      'of', 'from', 'by', 'at', 'as', // Prepositions
+      'this', 'that', 'these', 'those' // Demonstratives
+    ]);
+    
+    // Try to capture a multi-word target (noun phrase)
+    const candidates: string[] = [];
+    
+    for (let i = verbIndex + 1; i < Math.min(verbIndex + 6, words.length); i++) {
+      const rawWord = words[i];
+      const word = rawWord.replace(/[^a-z0-9]/g, ''); // Keep numbers
+      
+      if (word.length > 1 && !stopWords.has(word)) {
+        candidates.push(rawWord.replace(/[^a-zA-Z0-9-]/g, '')); // Clean punctuation
+        
+        // If we have a candidate and the NEXT word is also a candidate (and not a stop word), keep going
+        const nextWord = i + 1 < words.length ? words[i + 1].replace(/[^a-z0-9]/g, '') : null;
+        if (nextWord && !stopWords.has(nextWord) && nextWord.length > 2) {
+            continue;
+        } else {
+            // End of noun phrase
+            break;
+        }
       }
     }
-    return 'unknown';
+    
+    return candidates.length > 0 ? candidates.join(' ') : 'unknown';
   }
 
   private extractParameters(prompt: string, verb: string, target: string): Record<string, unknown> {
@@ -490,10 +511,17 @@ export class PdeEngine {
 
   private generateTaskPrompt(intent: ExplicitIntent | ImplicitIntent, originalPrompt: string): string {
     if ('action' in intent) {
-      return `${intent.action} ${intent.target}: Based on the original request "${originalPrompt}", ` +
-        `focus specifically on the ${intent.action} action targeting ${intent.target}.`;
+      const params = Object.keys(intent.parameters).length > 0 
+        ? ` using parameters: ${JSON.stringify(intent.parameters)}` 
+        : '';
+        
+      return `[${intent.type}] EXECUTE ACTION: ${intent.action.toUpperCase()} targeting '${intent.target}'.\n` +
+        `CONTEXT: Part of the workflow to "${originalPrompt}".\n` +
+        `INSTRUCTION: Focus specifically on the ${intent.action} phase for ${intent.target}${params}. ` +
+        `Ensure the output is comprehensive and ready for downstream integration.`;
     }
-    return `Address implicit requirement: ${intent.description}`;
+    return `[${intent.type}] ADDRESS IMPLICIT REQUIREMENT: ${intent.description}.\n` +
+        `CONTEXT: Part of the workflow to "${originalPrompt}".`;
   }
 
   private summarizeIntention(prompt: string, intents: IntentExtractionResult): string {
