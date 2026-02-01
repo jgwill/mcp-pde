@@ -70,6 +70,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             options: {
               type: 'object',
               properties: {
+                simple: { type: 'boolean', default: false },
                 medicineWheelEnabled: { type: 'boolean', default: true },
                 maxDepth: { type: 'number', default: 5 },
                 parallelization: { type: 'boolean', default: true },

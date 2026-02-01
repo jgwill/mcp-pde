@@ -74,6 +74,58 @@ export class PdeEngine {
     // Layer 1: Intent Extraction
     const intents = this.extractIntents(input.prompt, input.context);
 
+    // New "Simple Mode" Path
+    if (config.simple) {
+      const allIntents = [...intents.explicitIntents, ...intents.implicitIntents];
+      const workflowId = uuidv4();
+      const planId = uuidv4();
+
+      const simpleTasks: PdeTask[] = allIntents.map(intent => ({
+        id: `task-${intent.id}`,
+        description: 'action' in intent
+          ? `${intent.action} ${intent.target}`
+          : intent.description,
+        prompt: this.generateTaskPrompt(intent, input.prompt),
+        expectedOutputs: ['action' in intent ? intent.target : 'result'],
+        dependencies: [],
+      }));
+
+      const simpleStage: PdeStage = {
+        stageId: 'stage-direct-plan',
+        direction: 'SOUTH',
+        directionDescription: 'Actionable To-Do List',
+        executionType: 'sequential',
+        tasks: simpleTasks,
+        checkpointAfter: false,
+      };
+
+      const plan: ExecutionPlan = {
+        planId,
+        workflowId,
+        overallIntention: this.summarizeIntention(input.prompt, intents),
+        stages: [simpleStage],
+        tasks: simpleTasks.map(task => ({
+          taskId: task.id,
+          stageId: simpleStage.stageId,
+          inputs: [],
+          successCriteria: { type: 'output_contains', value: 'completed' },
+          recoveryStrategy: { onFailure: 'retry', retryCount: 1 },
+          checkpointData: { saves: task.expectedOutputs },
+        })),
+        metadata: {
+          totalTasks: simpleTasks.length,
+          estimatedDuration: this.estimateDuration(simpleTasks.length),
+          parallelizableTasks: 0,
+          requiredTools: ['llm-agent'],
+          estimatedComplexity: simpleTasks.length > 5 ? 'medium' : 'low',
+        },
+      };
+
+      workflows.set(plan.planId, plan);
+      return plan;
+    }
+
+    // Original 5-Layer Path
     // Layer 2: Dependency Graph Construction
     const dependencyGraph = this.buildDependencyGraph(intents);
 

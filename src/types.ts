@@ -298,6 +298,7 @@ export interface DecomposeInput {
     userPreferences?: Record<string, string>;
   };
   options?: {
+    simple?: boolean;
     medicineWheelEnabled?: boolean;
     maxDepth?: number;
     parallelization?: boolean;

@@ -38,6 +38,38 @@ Add to your MCP configuration:
 }
 ```
 
+## Guidance for LLM Agents: Preserving User Intent
+
+The primary purpose of the `pde_decompose` tool is to **preserve user intent**. Complex user prompts often contain subtle, nested, or implicit requirements that standard LLM processing can misinterpret or ignore. This tool is designed to be the first step in any complex interaction to mitigate this risk.
+
+### Two Modes of Operation
+
+1.  **Simple Mode (Recommended Default)**: Activated with `options: { simple: true }`. This mode is the key to preserving intent. It uses the powerful intent extraction layer and then directly translates the findings into a simple, actionable to-do list. **This should be your default way of using the tool.**
+
+2.  **Ceremonial Mode (Default, for Structured Problems)**: If the `simple` option is omitted, the engine runs its full 5-layer pipeline, producing a complex, ceremonially-aligned workflow. This mode is powerful but should only be used for well-defined, top-down problems that explicitly require a formal, multi-stage plan.
+
+### Recommended Workflow
+
+To ensure user intent is never lost, follow this interaction pattern:
+
+1.  **Receive Complex Prompt**: When a user provides a complex, multi-part prompt (e.g., bug reports, feature ideas, architectural plans).
+
+2.  **Decompose in Simple Mode**: Your immediate first action should be to call `pde_decompose` with the `simple: true` option.
+
+    ```typescript
+    // Example agent call
+    pde_decompose({
+      prompt: "The user's complex prompt...",
+      options: { simple: true }
+    })
+    ```
+
+3.  **Confirm Understanding**: Present the resulting to-do list back to the user. This list is a clear, point-by-point reflection of your understanding of their request.
+
+4.  **Execute with Confidence**: Once the user confirms the to-do list is accurate, you can proceed to execute each task, confident that you are perfectly aligned with their original intent.
+
+This workflow transforms the tool from a simple planner into a powerful "understanding and confirmation" engine, building trust and ensuring accuracy from the very beginning of an interaction.
+
 ### Available Tools
 
 | Tool | Description |
