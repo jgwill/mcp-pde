@@ -1,6 +1,21 @@
 /**
- * MCP Server for PDE
- * Implements Model Context Protocol server with PDE tools, resources, and prompts
+ * MCP Server for PDE v2
+ * 
+ * Implements Model Context Protocol server with LLM-driven Prompt Decomposition Engine.
+ * 
+ * Tools:
+ *   pde_decompose     - Build system prompt for LLM decomposition, or parse LLM response
+ *   pde_parse_response - Parse an LLM response into DecompositionResult and store it
+ *   pde_get            - Retrieve a stored decomposition by ID
+ *   pde_list           - List stored decompositions
+ *   pde_export_markdown - Export a decomposition as markdown
+ * 
+ * Resources:
+ *   pde://schema/decomposition-result - The DecompositionResult JSON schema
+ *   pde://directions                  - Four Directions metadata
+ * 
+ * Prompts:
+ *   pde-decompose - The system prompt for LLM-driven decomposition
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -17,121 +32,103 @@ import {
 import { PdeEngine } from './pde-engine.js';
 import {
   type DecomposeInput,
-  type ExecuteStageInput,
-  type GetCheckpointInput,
-  type ValidatePlanInput,
-  type ListWorkflowsInput,
-  DIRECTION_METADATA,
-  INTENT_VERBS,
+  type GetDecompositionInput,
+  type ListDecompositionsInput,
+  type ExportMarkdownInput,
+  DIRECTION_META,
+  DIRECTIONS,
+  DEFAULT_OPTIONS,
 } from './types.js';
+import { buildSystemPrompt, formatUserMessage } from './prompts.js';
 
-// Initialize PDE Engine
 const engine = new PdeEngine();
 
-// Create MCP Server
 const server = new Server(
-  {
-    name: 'pde-mcp',
-    version: '1.0.0',
-  },
-  {
-    capabilities: {
-      tools: {},
-      resources: {},
-      prompts: {},
-    },
-  }
+  { name: 'pde-mcp', version: '2.0.0' },
+  { capabilities: { tools: {}, resources: {}, prompts: {} } }
 );
 
 // ============================================================================
-// Tools Handler
+// Tools
 // ============================================================================
 
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: [
-      {
-        name: 'pde_decompose',
-        description: 'Decompose a complex prompt into a structured, ceremonially-aligned execution plan',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            prompt: {
-              type: 'string',
-              description: 'The complex prompt to decompose',
-            },
-            context: {
-              type: 'object',
-              properties: {
-                files: { type: 'array', items: { type: 'string' } },
-                previousResults: { type: 'array', items: { type: 'string' } },
-              },
-            },
-            options: {
-              type: 'object',
-              properties: {
-                simple: { type: 'boolean', default: false },
-                medicineWheelEnabled: { type: 'boolean', default: true },
-                maxDepth: { type: 'number', default: 5 },
-                parallelization: { type: 'boolean', default: true },
-              },
+server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  tools: [
+    {
+      name: 'pde_decompose',
+      description: 'Build system prompt + user message for LLM-driven prompt decomposition. Send the returned systemPrompt and userMessage to your LLM, then call pde_parse_response with the result.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          prompt: { type: 'string', description: 'The complex prompt to decompose' },
+          options: {
+            type: 'object',
+            properties: {
+              extractImplicit: { type: 'boolean', default: true, description: 'Extract implicit intents from hedging language' },
+              mapDependencies: { type: 'boolean', default: true, description: 'Map dependencies between actions' },
             },
           },
-          required: ['prompt'],
         },
+        required: ['prompt'],
       },
-      {
-        name: 'pde_get_plan',
-        description: 'Retrieve a previously decomposed execution plan by ID',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            planId: { type: 'string', description: 'The plan ID to retrieve' },
-          },
-          required: ['planId'],
-        },
-      },
-      {
-        name: 'pde_validate_plan',
-        description: 'Validate an execution plan for completeness and coherence',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            planId: { type: 'string', description: 'The plan ID to validate' },
-          },
-          required: ['planId'],
-        },
-      },
-      {
-        name: 'pde_get_checkpoint',
-        description: 'Retrieve checkpoint data for workflow recovery',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            workflowId: { type: 'string', description: 'Workflow ID' },
-            stageId: { type: 'string', description: 'Optional stage ID' },
-          },
-          required: ['workflowId'],
-        },
-      },
-      {
-        name: 'pde_list_workflows',
-        description: 'List all active and completed workflows',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            status: { 
-              type: 'string', 
-              enum: ['active', 'completed', 'failed', 'all'],
-              default: 'all',
+    },
+    {
+      name: 'pde_parse_response',
+      description: 'Parse an LLM response (from pde_decompose prompt) into structured DecompositionResult JSON and store it in .pde/ folder.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          llm_response: { type: 'string', description: 'The raw LLM response text containing the DecompositionResult JSON' },
+          original_prompt: { type: 'string', description: 'The original user prompt that was decomposed' },
+          workdir: { type: 'string', description: 'Working directory for .pde/ storage (defaults to cwd)' },
+          options: {
+            type: 'object',
+            properties: {
+              extractImplicit: { type: 'boolean', default: true },
+              mapDependencies: { type: 'boolean', default: true },
             },
-            limit: { type: 'number', default: 10 },
           },
         },
+        required: ['llm_response', 'original_prompt'],
       },
-    ],
-  };
-});
+    },
+    {
+      name: 'pde_get',
+      description: 'Retrieve a stored decomposition by ID from .pde/ folder',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'Decomposition ID' },
+          workdir: { type: 'string', description: 'Working directory' },
+        },
+        required: ['id'],
+      },
+    },
+    {
+      name: 'pde_list',
+      description: 'List stored decompositions from .pde/ folder',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          workdir: { type: 'string', description: 'Working directory' },
+          limit: { type: 'number', default: 10 },
+        },
+      },
+    },
+    {
+      name: 'pde_export_markdown',
+      description: 'Export a stored decomposition as a git-diffable markdown document with Four Directions headers',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'Decomposition ID' },
+          workdir: { type: 'string', description: 'Working directory' },
+        },
+        required: ['id'],
+      },
+    },
+  ],
+}));
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
@@ -141,187 +138,132 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'pde_decompose': {
         const input = args as unknown as DecomposeInput;
         if (!input?.prompt) {
-          return {
-            content: [{ type: 'text', text: 'Missing required parameter: prompt' }],
-            isError: true,
-          };
+          return { content: [{ type: 'text', text: 'Missing required parameter: prompt' }], isError: true };
         }
-        const plan = await engine.decompose(input);
+        const { systemPrompt, userMessage } = engine.buildPrompt(input.prompt, input.options);
         return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(plan, null, 2),
-            },
-          ],
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              instructions: 'Send systemPrompt as system message and userMessage as user message to your LLM. Then call pde_parse_response with the LLM output.',
+              systemPrompt,
+              userMessage,
+              original_prompt: input.prompt,
+            }, null, 2),
+          }],
         };
       }
 
-      case 'pde_get_plan': {
-        const { planId } = args as { planId: string };
-        const plan = engine.getPlan(planId);
-        if (!plan) {
-          return {
-            content: [{ type: 'text', text: `Plan ${planId} not found` }],
-            isError: true,
-          };
+      case 'pde_parse_response': {
+        const { llm_response, original_prompt, workdir, options } = args as {
+          llm_response: string;
+          original_prompt: string;
+          workdir?: string;
+          options?: { extractImplicit?: boolean; mapDependencies?: boolean };
+        };
+        if (!llm_response || !original_prompt) {
+          return { content: [{ type: 'text', text: 'Missing required: llm_response and original_prompt' }], isError: true };
         }
+        const stored = engine.parseAndStore(llm_response, original_prompt, options, workdir);
         return {
-          content: [{ type: 'text', text: JSON.stringify(plan, null, 2) }],
+          content: [{ type: 'text', text: JSON.stringify(stored, null, 2) }],
         };
       }
 
-      case 'pde_validate_plan': {
-        const { planId } = args as unknown as ValidatePlanInput;
-        const result = engine.validatePlan(planId);
-        return {
-          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-        };
-      }
-
-      case 'pde_get_checkpoint': {
-        const { workflowId, stageId } = args as unknown as GetCheckpointInput;
-        const checkpoint = engine.getCheckpoint(workflowId, stageId);
-        if (!checkpoint) {
-          return {
-            content: [{ type: 'text', text: 'No checkpoint found' }],
-          };
+      case 'pde_get': {
+        const { id, workdir } = args as unknown as GetDecompositionInput;
+        const stored = engine.get(id, workdir);
+        if (!stored) {
+          return { content: [{ type: 'text', text: `Decomposition ${id} not found` }], isError: true };
         }
-        return {
-          content: [{ type: 'text', text: JSON.stringify(checkpoint, null, 2) }],
-        };
+        return { content: [{ type: 'text', text: JSON.stringify(stored, null, 2) }] };
       }
 
-      case 'pde_list_workflows': {
-        const { status, limit } = (args || {}) as ListWorkflowsInput;
-        const workflows = engine.listWorkflows(status, limit);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(
-                workflows.map(w => ({
-                  planId: w.planId,
-                  workflowId: w.workflowId,
-                  intention: w.overallIntention,
-                  stageCount: w.stages.length,
-                  taskCount: w.metadata.totalTasks,
-                })),
-                null,
-                2
-              ),
-            },
-          ],
-        };
+      case 'pde_list': {
+        const { workdir, limit } = (args || {}) as ListDecompositionsInput;
+        const items = engine.list(workdir, limit);
+        const summary = items.map(d => ({
+          id: d.id,
+          timestamp: d.timestamp,
+          primaryAction: `${d.result.primary.action} ${d.result.primary.target}`,
+          secondaryCount: d.result.secondary.length,
+          ambiguityCount: d.result.ambiguities.length,
+          actionStackCount: d.result.actionStack.length,
+        }));
+        return { content: [{ type: 'text', text: JSON.stringify(summary, null, 2) }] };
+      }
+
+      case 'pde_export_markdown': {
+        const { id, workdir } = args as unknown as ExportMarkdownInput;
+        const md = engine.exportMarkdown(id, workdir);
+        if (!md) {
+          return { content: [{ type: 'text', text: `Decomposition ${id} not found` }], isError: true };
+        }
+        return { content: [{ type: 'text', text: md }] };
       }
 
       default:
-        return {
-          content: [{ type: 'text', text: `Unknown tool: ${name}` }],
-          isError: true,
-        };
+        return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };
     }
   } catch (error) {
     return {
-      content: [
-        {
-          type: 'text',
-          text: `Error: ${error instanceof Error ? error.message : String(error)}`,
-        },
-      ],
+      content: [{ type: 'text', text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
       isError: true,
     };
   }
 });
 
 // ============================================================================
-// Resources Handler
+// Resources
 // ============================================================================
 
-server.setRequestHandler(ListResourcesRequestSchema, async () => {
-  return {
-    resources: [
-      {
-        uri: 'pde://ceremonies/medicine-wheel',
-        name: 'Medicine Wheel Directions',
-        description: 'Medicine Wheel direction definitions and mapping criteria',
-        mimeType: 'application/json',
-      },
-      {
-        uri: 'pde://schemas/intent-types',
-        name: 'Intent Types Schema',
-        description: 'Intent classification taxonomy',
-        mimeType: 'application/json',
-      },
-      {
-        uri: 'pde://templates/workflow-stages',
-        name: 'Workflow Stage Templates',
-        description: 'Standard workflow stage templates',
-        mimeType: 'application/json',
-      },
-    ],
-  };
-});
+server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+  resources: [
+    {
+      uri: 'pde://schema/decomposition-result',
+      name: 'DecompositionResult Schema',
+      description: 'The canonical JSON schema for prompt decomposition output (primary/secondary intents, context, directions, action stack, ambiguities)',
+      mimeType: 'application/json',
+    },
+    {
+      uri: 'pde://directions',
+      name: 'Four Directions',
+      description: 'Medicine Wheel direction metadata: EAST=Vision, SOUTH=Analysis, WEST=Validation, NORTH=Action',
+      mimeType: 'application/json',
+    },
+  ],
+}));
 
 server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
   const { uri } = request.params;
-
   switch (uri) {
-    case 'pde://ceremonies/medicine-wheel':
+    case 'pde://schema/decomposition-result':
       return {
-        contents: [
-          {
-            uri,
-            mimeType: 'application/json',
-            text: JSON.stringify(
-              {
-                directions: DIRECTION_METADATA,
-                cyclePattern: ['EAST', 'SOUTH', 'WEST', 'NORTH'],
-                spiralProgression: true,
-              },
-              null,
-              2
-            ),
-          },
-        ],
+        contents: [{
+          uri,
+          mimeType: 'application/json',
+          text: JSON.stringify({
+            description: 'DecompositionResult — the output of PDE prompt decomposition',
+            schema: {
+              primary: { action: 'string', target: 'string', urgency: 'immediate|session|persistent', confidence: '0.0-1.0' },
+              secondary: [{ action: 'string', target: 'string', implicit: 'boolean', dependency: 'string|null', confidence: '0.0-1.0' }],
+              context: { files_needed: ['string'], tools_required: ['string'], assumptions: ['string'] },
+              outputs: { artifacts: ['string'], updates: ['string'], communications: ['string'] },
+              directions: { east: [{ text: 'string', confidence: '0.0-1.0', implicit: 'boolean' }], south: '...', west: '...', north: '...' },
+              actionStack: [{ text: 'string', direction: 'east|south|west|north', dependency: 'string|null', completed: 'boolean' }],
+              ambiguities: [{ text: 'string', suggestion: 'string' }],
+            },
+          }, null, 2),
+        }],
       };
 
-    case 'pde://schemas/intent-types':
+    case 'pde://directions':
       return {
-        contents: [
-          {
-            uri,
-            mimeType: 'application/json',
-            text: JSON.stringify({ intentVerbs: INTENT_VERBS }, null, 2),
-          },
-        ],
-      };
-
-    case 'pde://templates/workflow-stages':
-      return {
-        contents: [
-          {
-            uri,
-            mimeType: 'application/json',
-            text: JSON.stringify(
-              {
-                templates: {
-                  'standard-development': {
-                    description: 'Standard software development workflow',
-                    stages: [
-                      { direction: 'EAST', name: 'Requirements Analysis', purpose: 'Extract and clarify requirements' },
-                      { direction: 'SOUTH', name: 'Implementation', purpose: 'Build core functionality' },
-                      { direction: 'WEST', name: 'Validation', purpose: 'Test and validate implementation' },
-                      { direction: 'NORTH', name: 'Completion', purpose: 'Deploy and document' },
-                    ],
-                  },
-                },
-              },
-              null,
-              2
-            ),
-          },
-        ],
+        contents: [{
+          uri,
+          mimeType: 'application/json',
+          text: JSON.stringify(DIRECTION_META, null, 2),
+        }],
       };
 
     default:
@@ -330,200 +272,46 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
 });
 
 // ============================================================================
-// Prompts Handler
+// Prompts
 // ============================================================================
 
-server.setRequestHandler(ListPromptsRequestSchema, async () => {
-  return {
-    prompts: [
-      {
-        name: 'pde-intent-extraction',
-        description: 'Guide Layer 1 intent extraction from user prompt',
-        arguments: [
-          { name: 'userPrompt', description: 'The prompt to analyze', required: true },
-        ],
-      },
-      {
-        name: 'pde-dependency-analysis',
-        description: 'Guide Layer 2 dependency graph construction',
-        arguments: [
-          { name: 'intentsJson', description: 'JSON of extracted intents', required: true },
-        ],
-      },
-      {
-        name: 'pde-wheel-assignment',
-        description: 'Guide Layer 3 Medicine Wheel direction assignment',
-        arguments: [
-          { name: 'intentsJson', description: 'JSON of extracted intents', required: true },
-          { name: 'dependencyGraphJson', description: 'JSON of dependency graph', required: true },
-        ],
-      },
-      {
-        name: 'pde-workflow-generation',
-        description: 'Guide Layer 4 workflow template generation',
-        arguments: [
-          { name: 'assignmentsJson', description: 'JSON of wheel assignments', required: true },
-          { name: 'dependencyGraphJson', description: 'JSON of dependency graph', required: true },
-        ],
-      },
-      {
-        name: 'pde-execution-plan',
-        description: 'Guide Layer 5 execution plan finalization',
-        arguments: [
-          { name: 'workflowJson', description: 'JSON of workflow template', required: true },
-        ],
-      },
-    ],
-  };
-});
+server.setRequestHandler(ListPromptsRequestSchema, async () => ({
+  prompts: [
+    {
+      name: 'pde-decompose',
+      description: 'System prompt for LLM-driven prompt decomposition. Returns system + user messages to send to your LLM.',
+      arguments: [
+        { name: 'userPrompt', description: 'The prompt to decompose', required: true },
+        { name: 'extractImplicit', description: 'Extract implicit intents (default: true)', required: false },
+        { name: 'mapDependencies', description: 'Map dependencies (default: true)', required: false },
+      ],
+    },
+  ],
+}));
 
 server.setRequestHandler(GetPromptRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
+  const { name, arguments: promptArgs } = request.params;
 
-  const promptTemplates: Record<string, (args: Record<string, string>) => { messages: Array<{ role: string; content: { type: string; text: string } }> }> = {
-    'pde-intent-extraction': (a) => ({
-      messages: [
-        {
-          role: 'user',
-          content: {
-            type: 'text',
-            text: `You are an intent extraction specialist. Analyze the following user request with precision.
-
-## User Request
-"${a.userPrompt}"
-
-## Your Task
-
-### Step 1: Explicit Intent Identification
-For each explicit action, extract:
-- Action: The verb/operation
-- Target: What is being acted upon
-- Parameters: Constraints or values
-- Type: CREATION | MODIFICATION | ANALYSIS | VALIDATION | INTEGRATION | COMMUNICATION
-
-### Step 2: Implicit Intent Discovery
-Look for hidden requirements signaled by:
-- "which I assume" → assumptions requiring validation
-- "you will" → expectations without explicit instruction
-- "somehow" → uncertainty markers
-
-### Step 3: Ambiguity Detection
-Flag anything underspecified or conflicting.
-
-Output as JSON: { explicitIntents: [...], implicitIntents: [...], ambiguities: [...] }`,
-          },
-        },
-      ],
-    }),
-
-    'pde-dependency-analysis': (a) => ({
-      messages: [
-        {
-          role: 'user',
-          content: {
-            type: 'text',
-            text: `You are a dependency analysis specialist.
-
-## Intents to Analyze
-${a.intentsJson}
-
-## Analysis Framework
-
-### Step 1: Data Flow Analysis
-For each intent, identify inputs required, outputs produced, state dependencies.
-
-### Step 2: Temporal Dependencies
-Determine: must-precede, must-follow, no constraint.
-
-### Step 3: Parallelization Opportunities
-Identify intents that can execute simultaneously.
-
-Output as JSON: { nodes: [...], edges: [...], parallelGroups: [...], criticalPath: [...], hasCycles: boolean }`,
-          },
-        },
-      ],
-    }),
-
-    'pde-wheel-assignment': (a) => ({
-      messages: [
-        {
-          role: 'user',
-          content: {
-            type: 'text',
-            text: `You are a ceremonial alignment specialist.
-
-## Medicine Wheel Directions
-- EAST (Nitsáhákees): Vision, inquiry, exploration
-- SOUTH (Nahat'á): Planning, implementation, building
-- WEST (Iina): Integration, validation, testing
-- NORTH (Siihasin): Wisdom, completion, deployment
-
-## Intents
-${a.intentsJson}
-
-## Dependency Graph
-${a.dependencyGraphJson}
-
-Assign each intent to a direction based on its action type.
-
-Output as JSON: { assignments: [...], stageGrouping: { EAST: [...], SOUTH: [...], WEST: [...], NORTH: [...] } }`,
-          },
-        },
-      ],
-    }),
-
-    'pde-workflow-generation': (a) => ({
-      messages: [
-        {
-          role: 'user',
-          content: {
-            type: 'text',
-            text: `You are a workflow architect.
-
-## Assignments
-${a.assignmentsJson}
-
-## Dependency Graph
-${a.dependencyGraphJson}
-
-Generate a structured execution workflow with stages for each Medicine Wheel direction.
-
-Output as JSON: { workflowId: "...", overallIntention: "...", stages: [...] }`,
-          },
-        },
-      ],
-    }),
-
-    'pde-execution-plan': (a) => ({
-      messages: [
-        {
-          role: 'user',
-          content: {
-            type: 'text',
-            text: `You are an execution planning specialist.
-
-## Workflow
-${a.workflowJson}
-
-Finalize into an execution plan with:
-- Agent commands
-- Success criteria
-- Recovery strategies
-- Checkpoint data
-
-Output as JSON: { planId: "...", workflowId: "...", tasks: [...], metadata: {...} }`,
-          },
-        },
-      ],
-    }),
-  };
-
-  const templateFn = promptTemplates[name];
-  if (!templateFn) {
+  if (name !== 'pde-decompose') {
     throw new Error(`Unknown prompt: ${name}`);
   }
 
-  return templateFn(args || {});
+  const opts = {
+    extractImplicit: promptArgs?.extractImplicit !== 'false',
+    mapDependencies: promptArgs?.mapDependencies !== 'false',
+  };
+
+  return {
+    messages: [
+      {
+        role: 'user',
+        content: {
+          type: 'text',
+          text: `${buildSystemPrompt(opts)}\n\n${formatUserMessage(promptArgs?.userPrompt || '')}`,
+        },
+      },
+    ],
+  };
 });
 
 // ============================================================================
@@ -533,7 +321,7 @@ Output as JSON: { planId: "...", workflowId: "...", tasks: [...], metadata: {...
 export async function startServer(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('PDE MCP Server started');
+  console.error('PDE MCP Server v2 started');
 }
 
 export { server, engine };
