@@ -1,105 +1,122 @@
 /**
- * MCP Tools Tests
+ * MCP Tools Tests (v2)
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { engine } from '../src/mcp-server.js';
-import { DIRECTION_METADATA, INTENT_VERBS } from '../src/types.js';
+import { DIRECTION_META, DIRECTIONS } from '../src/types.js';
+import { existsSync, mkdirSync, rmSync } from 'fs';
+import { join } from 'path';
+import os from 'os';
+
+// Sample LLM response
+const SAMPLE_RESPONSE = JSON.stringify({
+  primary: { action: "create", target: "user management system", urgency: "session", confidence: 0.9 },
+  secondary: [{ action: "implement", target: "authentication", implicit: false, dependency: null, confidence: 0.8 }],
+  context: { files_needed: ["src/auth/"], tools_required: ["database"], assumptions: [] },
+  outputs: { artifacts: ["src/auth/index.ts"], updates: [], communications: [] },
+  directions: {
+    east: [{ text: "Understand auth requirements", confidence: 0.9, implicit: false }],
+    south: [{ text: "Research auth patterns", confidence: 0.8, implicit: true }],
+    west: [], north: [],
+  },
+  actionStack: [{ text: "Create auth module", direction: "south", dependency: null, completed: false }],
+  ambiguities: [{ text: "authentication type", suggestion: "Specify OAuth, JWT, or session-based" }],
+});
 
 describe('MCP Tools', () => {
-  describe('pde_decompose', () => {
-    it('should decompose a prompt via engine', async () => {
-      const plan = await engine.decompose({
-        prompt: 'Create a user management system with authentication',
-      });
+  let testDir: string;
 
-      expect(plan).toBeDefined();
-      expect(plan.planId).toBeDefined();
-      expect(plan.stages.length).toBeGreaterThan(0);
-      expect(plan.metadata.totalTasks).toBeGreaterThan(0);
+  beforeEach(() => {
+    testDir = join(os.tmpdir(), `pde-mcp-test-${Date.now()}`);
+    mkdirSync(testDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (existsSync(testDir)) rmSync(testDir, { recursive: true, force: true });
+  });
+
+  describe('pde_decompose (buildPrompt)', () => {
+    it('should build system prompt and user message', () => {
+      const { systemPrompt, userMessage } = engine.buildPrompt('Create a user management system with authentication');
+      expect(systemPrompt).toContain('Prompt Decomposition Engine');
+      expect(systemPrompt).toContain('EAST');
+      expect(userMessage).toContain('Create a user management system');
     });
 
-    it('should handle context files', async () => {
-      const plan = await engine.decompose({
-        prompt: 'Refactor the auth module',
-        context: {
-          files: ['src/auth/index.ts', 'src/auth/types.ts'],
-        },
-      });
-
-      expect(plan).toBeDefined();
+    it('should handle options', () => {
+      const result = engine.buildPrompt('Refactor the auth module', { extractImplicit: false });
+      expect(result.systemPrompt).toContain('Only extract explicit intents');
     });
   });
 
-  describe('pde_get_plan', () => {
-    it('should retrieve a stored plan', async () => {
-      const plan = await engine.decompose({
-        prompt: 'Build a dashboard',
-      });
+  describe('pde_parse_response + pde_get', () => {
+    it('should parse response and retrieve stored result', () => {
+      const stored = engine.parseAndStore(SAMPLE_RESPONSE, 'Build a dashboard', undefined, testDir);
+      expect(stored).toBeDefined();
+      expect(stored.id).toBeDefined();
+      expect(stored.result.primary.action).toBe('create');
 
-      const retrieved = engine.getPlan(plan.planId);
-      expect(retrieved).toBeDefined();
-      expect(retrieved?.planId).toBe(plan.planId);
+      const retrieved = engine.get(stored.id, testDir);
+      expect(retrieved).not.toBeNull();
+      expect(retrieved!.id).toBe(stored.id);
     });
 
-    it('should return undefined for non-existent plan', () => {
-      const retrieved = engine.getPlan('fake-id');
-      expect(retrieved).toBeUndefined();
-    });
-  });
-
-  describe('pde_validate_plan', () => {
-    it('should validate a plan', async () => {
-      const plan = await engine.decompose({
-        prompt: 'Create and test a module',
-      });
-
-      const validation = engine.validatePlan(plan.planId);
-      expect(validation.isValid).toBe(true);
-      expect(validation.coherenceScore).toBeGreaterThanOrEqual(0);
-      expect(validation.completenessScore).toBeGreaterThanOrEqual(0);
+    it('should return null for non-existent plan', () => {
+      const retrieved = engine.get('fake-id', testDir);
+      expect(retrieved).toBeNull();
     });
   });
 
-  describe('pde_list_workflows', () => {
-    it('should list workflows', async () => {
-      await engine.decompose({ prompt: 'Test workflow 1' });
-      await engine.decompose({ prompt: 'Test workflow 2' });
-
-      const workflows = engine.listWorkflows('all', 10);
-      expect(workflows.length).toBeGreaterThanOrEqual(2);
+  describe('pde_list', () => {
+    it('should list decompositions', () => {
+      engine.parseAndStore(SAMPLE_RESPONSE, 'Test 1', undefined, testDir);
+      engine.parseAndStore(SAMPLE_RESPONSE, 'Test 2', undefined, testDir);
+      const items = engine.list(testDir);
+      expect(items.length).toBeGreaterThanOrEqual(2);
     });
 
-    it('should respect limit', async () => {
-      const workflows = engine.listWorkflows('all', 1);
-      expect(workflows.length).toBeLessThanOrEqual(1);
+    it('should respect limit', () => {
+      engine.parseAndStore(SAMPLE_RESPONSE, 'Test 1', undefined, testDir);
+      engine.parseAndStore(SAMPLE_RESPONSE, 'Test 2', undefined, testDir);
+      const items = engine.list(testDir, 1);
+      expect(items.length).toBeLessThanOrEqual(1);
+    });
+  });
+
+  describe('pde_export_markdown', () => {
+    it('should export markdown with directions', () => {
+      const stored = engine.parseAndStore(SAMPLE_RESPONSE, 'Test prompt', undefined, testDir);
+      const md = engine.exportMarkdown(stored.id, testDir);
+      expect(md).not.toBeNull();
+      expect(md).toContain('# Prompt Decomposition');
+      expect(md).toContain('EAST');
+      expect(md).toContain('Primary Intent');
     });
   });
 });
 
 describe('MCP Resources', () => {
-  describe('medicine-wheel resource', () => {
+  describe('direction metadata', () => {
     it('should have all four directions defined', () => {
-      expect(DIRECTION_METADATA.EAST).toBeDefined();
-      expect(DIRECTION_METADATA.SOUTH).toBeDefined();
-      expect(DIRECTION_METADATA.WEST).toBeDefined();
-      expect(DIRECTION_METADATA.NORTH).toBeDefined();
+      expect(DIRECTION_META.east).toBeDefined();
+      expect(DIRECTION_META.south).toBeDefined();
+      expect(DIRECTION_META.west).toBeDefined();
+      expect(DIRECTION_META.north).toBeDefined();
     });
 
-    it('should have ceremony types for each direction', () => {
-      expect(DIRECTION_METADATA.EAST.ceremonyType).toBe('vision_inquiry');
-      expect(DIRECTION_METADATA.SOUTH.ceremonyType).toBe('wave_counting');
-      expect(DIRECTION_METADATA.WEST.ceremonyType).toBe('talking_circles');
-      expect(DIRECTION_METADATA.NORTH.ceremonyType).toBe('elder_council');
+    it('should have names and emojis for each direction', () => {
+      expect(DIRECTION_META.east.name).toBe('VISION');
+      expect(DIRECTION_META.south.name).toBe('ANALYSIS');
+      expect(DIRECTION_META.west.name).toBe('VALIDATION');
+      expect(DIRECTION_META.north.name).toBe('ACTION');
+      expect(DIRECTION_META.east.emoji).toBe('🌅');
     });
   });
 
-  describe('intent-types resource', () => {
-    it('should have verb mappings for each intent type', () => {
-      expect(INTENT_VERBS.CREATION).toBeDefined();
-      expect(INTENT_VERBS.CREATION).toContain('create');
-      expect(INTENT_VERBS.ANALYSIS).toContain('analyze');
-      expect(INTENT_VERBS.VALIDATION).toContain('test');
+  describe('directions constant', () => {
+    it('should have four directions in order', () => {
+      expect(DIRECTIONS).toEqual(['east', 'south', 'west', 'north']);
     });
   });
 });

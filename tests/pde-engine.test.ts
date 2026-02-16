@@ -1,248 +1,268 @@
 /**
- * PDE Engine Tests
+ * PDE Engine v2 Tests
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { PdeEngine } from '../src/pde-engine.js';
-import type { DecomposeInput } from '../src/types.js';
+import { parseDecompositionResponse, actionStackToMarkdown, PDEParseError } from '../src/parser.js';
+import { buildSystemPrompt, formatUserMessage } from '../src/prompts.js';
+import { decompositionToMarkdown, saveDecomposition, loadDecomposition, listDecompositions } from '../src/storage.js';
+import { DEFAULT_OPTIONS, DIRECTION_META, DIRECTIONS } from '../src/types.js';
+import type { DecompositionResult } from '../src/types.js';
+import { existsSync, mkdirSync, rmSync } from 'fs';
+import { join } from 'path';
+import os from 'os';
+
+// Sample LLM response that matches the DecompositionResult schema
+const SAMPLE_LLM_RESPONSE = JSON.stringify({
+  primary: {
+    action: "create",
+    target: "user authentication system",
+    urgency: "session",
+    confidence: 0.9,
+  },
+  secondary: [
+    {
+      action: "implement",
+      target: "OAuth support",
+      implicit: false,
+      dependency: "create user authentication system",
+      confidence: 0.85,
+    },
+    {
+      action: "add",
+      target: "rate limiting",
+      implicit: true,
+      dependency: "create user authentication system",
+      confidence: 0.6,
+    },
+  ],
+  context: {
+    files_needed: ["src/auth/", "src/middleware/"],
+    tools_required: ["database", "OAuth provider"],
+    assumptions: ["Rate limiting is needed based on 'which I assume'"],
+  },
+  outputs: {
+    artifacts: ["src/auth/oauth.ts", "src/middleware/rateLimit.ts"],
+    updates: ["database schema"],
+    communications: ["API documentation update"],
+  },
+  directions: {
+    east: [{ text: "Understand OAuth requirements", confidence: 0.9, implicit: false }],
+    south: [{ text: "Research OAuth providers", confidence: 0.8, implicit: true }],
+    west: [{ text: "Validate rate limiting approach", confidence: 0.7, implicit: true }],
+    north: [{ text: "Implement authentication system", confidence: 0.9, implicit: false }],
+  },
+  actionStack: [
+    { text: "Set up auth module structure", direction: "east", dependency: null, completed: false },
+    { text: "Implement OAuth flow", direction: "south", dependency: "Set up auth module structure", completed: false },
+    { text: "Add rate limiting middleware", direction: "south", dependency: "Implement OAuth flow", completed: false },
+    { text: "Write integration tests", direction: "west", dependency: "Add rate limiting middleware", completed: false },
+    { text: "Update API docs", direction: "north", dependency: "Write integration tests", completed: false },
+  ],
+  ambiguities: [
+    { text: "which I assume needs rate limiting", suggestion: "Clarify rate limiting requirements: requests per second, per user or global?" },
+    { text: "somehow", suggestion: "Specify the database schema update method" },
+  ],
+});
 
 describe('PdeEngine', () => {
   let engine: PdeEngine;
+  let testDir: string;
 
   beforeEach(() => {
-    engine = new PdeEngine();
+    testDir = join(os.tmpdir(), `pde-test-${Date.now()}`);
+    mkdirSync(testDir, { recursive: true });
+    engine = new PdeEngine(testDir);
   });
 
-  describe('decompose', () => {
-    it('should decompose a simple single-intent prompt', async () => {
-      const input: DecomposeInput = {
-        prompt: 'Create a user authentication system',
-      };
+  afterEach(() => {
+    if (existsSync(testDir)) {
+      rmSync(testDir, { recursive: true, force: true });
+    }
+  });
 
-      const plan = await engine.decompose(input);
-
-      expect(plan).toBeDefined();
-      expect(plan.planId).toBeDefined();
-      expect(plan.workflowId).toBeDefined();
-      expect(plan.overallIntention).toContain('create');
-      expect(plan.stages.length).toBeGreaterThan(0);
+  describe('buildPrompt', () => {
+    it('should return systemPrompt and userMessage', () => {
+      const result = engine.buildPrompt('Create a user auth system');
+      expect(result.systemPrompt).toContain('Prompt Decomposition Engine');
+      expect(result.systemPrompt).toContain('EAST');
+      expect(result.systemPrompt).toContain('implicit');
+      expect(result.userMessage).toContain('Create a user auth system');
     });
 
-    it('should decompose a multi-intent prompt', async () => {
-      const input: DecomposeInput = {
-        prompt: 'Create a REST API with PostgreSQL, write tests, and deploy to staging',
-      };
-
-      const plan = await engine.decompose(input);
-
-      expect(plan.metadata.totalTasks).toBeGreaterThanOrEqual(3);
-      expect(plan.overallIntention).toContain('create');
-    });
-
-    it('should assign Medicine Wheel directions correctly', async () => {
-      const input: DecomposeInput = {
-        prompt: 'Analyze the codebase, create new components, test everything, and deploy',
-      };
-
-      const plan = await engine.decompose(input);
-
-      // Should have EAST for analyze, SOUTH for create, WEST for test, NORTH for deploy
-      const directions = plan.stages.map(s => s.direction);
-      expect(directions).toContain('EAST');
-      expect(directions).toContain('SOUTH');
-    });
-
-    it('should disable Medicine Wheel when option is false', async () => {
-      const input: DecomposeInput = {
-        prompt: 'Create and test a module',
-        options: {
-          medicineWheelEnabled: false,
-        },
-      };
-
-      const plan = await engine.decompose(input);
-
-      // All tasks should be in SOUTH when wheel is disabled
-      const southStage = plan.stages.find(s => s.direction === 'SOUTH');
-      expect(southStage).toBeDefined();
-    });
-
-    it('should extract explicit intents', async () => {
-      const input: DecomposeInput = {
-        prompt: 'Build a dashboard with React and integrate with the API',
-      };
-
-      const plan = await engine.decompose(input);
-
-      expect(plan.metadata.totalTasks).toBeGreaterThanOrEqual(2);
-    });
-
-    it('should detect parallel execution opportunities', async () => {
-      const input: DecomposeInput = {
-        prompt: 'Create user service, create product service, create order service',
-      };
-
-      const plan = await engine.decompose(input);
-
-      // Multiple create operations - they may or may not be parallelizable
-      // depending on the deduplication. Check that the plan is valid.
-      expect(plan.metadata.totalTasks).toBeGreaterThanOrEqual(1);
-      expect(plan.stages.length).toBeGreaterThan(0);
+    it('should respect extractImplicit option', () => {
+      const withImplicit = engine.buildPrompt('test', { extractImplicit: true });
+      const withoutImplicit = engine.buildPrompt('test', { extractImplicit: false });
+      expect(withImplicit.systemPrompt).toContain('Extract implicit intents');
+      expect(withoutImplicit.systemPrompt).toContain('Only extract explicit intents');
     });
   });
 
-  describe('extractIntents', () => {
-    it('should extract CREATION intents', () => {
-      const result = engine.extractIntents('Create a new database schema');
-
-      expect(result.explicitIntents.length).toBeGreaterThan(0);
-      expect(result.explicitIntents[0].type).toBe('CREATION');
-      expect(result.explicitIntents[0].action).toBe('create');
+  describe('parseAndStore', () => {
+    it('should parse LLM response and store in .pde/', () => {
+      const stored = engine.parseAndStore(SAMPLE_LLM_RESPONSE, 'Create a user auth system');
+      expect(stored.id).toBeDefined();
+      expect(stored.result.primary.action).toBe('create');
+      expect(stored.result.secondary).toHaveLength(2);
+      expect(stored.result.ambiguities).toHaveLength(2);
+      expect(stored.result.actionStack).toHaveLength(5);
+      // Check files exist
+      expect(existsSync(join(testDir, '.pde', `${stored.id}.json`))).toBe(true);
+      expect(existsSync(join(testDir, '.pde', `${stored.id}.md`))).toBe(true);
     });
 
-    it('should extract ANALYSIS intents', () => {
-      const result = engine.extractIntents('Analyze the performance metrics');
-
-      expect(result.explicitIntents.length).toBeGreaterThan(0);
-      expect(result.explicitIntents[0].type).toBe('ANALYSIS');
-    });
-
-    it('should extract VALIDATION intents', () => {
-      const result = engine.extractIntents('Test the authentication flow');
-
-      expect(result.explicitIntents.length).toBeGreaterThan(0);
-      expect(result.explicitIntents[0].type).toBe('VALIDATION');
-    });
-
-    it('should detect implicit intents', () => {
-      const result = engine.extractIntents('Create a module which I assume will handle auth');
-
-      expect(result.implicitIntents.length).toBeGreaterThan(0);
-    });
-
-    it('should flag ambiguous prompts', () => {
-      const result = engine.extractIntents('do something with the thing');
-
-      expect(result.ambiguities.length).toBeGreaterThan(0);
+    it('should parse JSON wrapped in markdown code blocks', () => {
+      const wrapped = '```json\n' + SAMPLE_LLM_RESPONSE + '\n```';
+      const stored = engine.parseAndStore(wrapped, 'test prompt');
+      expect(stored.result.primary.action).toBe('create');
     });
   });
 
-  describe('buildDependencyGraph', () => {
-    it('should build a graph with no cycles for valid intents', () => {
-      const intents = engine.extractIntents('Create, test, and deploy the app');
-      const graph = engine.buildDependencyGraph(intents);
-
-      expect(graph.hasCycles).toBe(false);
+  describe('get and list', () => {
+    it('should retrieve a stored decomposition', () => {
+      const stored = engine.parseAndStore(SAMPLE_LLM_RESPONSE, 'test');
+      const retrieved = engine.get(stored.id);
+      expect(retrieved).not.toBeNull();
+      expect(retrieved!.id).toBe(stored.id);
+      expect(retrieved!.result.primary.action).toBe('create');
     });
 
-    it('should identify parallel groups when multiple same-type intents exist', () => {
-      // Build intents manually to ensure we have multiple of same type
-      const intents = {
-        explicitIntents: [
-          { id: 'intent-1', action: 'create', target: 'user', parameters: {}, type: 'CREATION' as const, priority: 'primary' as const },
-          { id: 'intent-2', action: 'create', target: 'order', parameters: {}, type: 'CREATION' as const, priority: 'secondary' as const },
-          { id: 'intent-3', action: 'create', target: 'product', parameters: {}, type: 'CREATION' as const, priority: 'secondary' as const },
-        ],
-        implicitIntents: [],
-        ambiguities: [],
-      };
-      const graph = engine.buildDependencyGraph(intents);
-
-      // With 3 CREATION intents, they should form a parallel group
-      expect(graph.parallelGroups.length).toBeGreaterThan(0);
+    it('should return null for non-existent ID', () => {
+      expect(engine.get('non-existent')).toBeNull();
     });
 
-    it('should compute critical path', () => {
-      const intents = engine.extractIntents('Analyze requirements, create code, test thoroughly, deploy safely');
-      const graph = engine.buildDependencyGraph(intents);
+    it('should list stored decompositions', () => {
+      engine.parseAndStore(SAMPLE_LLM_RESPONSE, 'test 1');
+      engine.parseAndStore(SAMPLE_LLM_RESPONSE, 'test 2');
+      const items = engine.list();
+      expect(items.length).toBe(2);
+    });
 
-      expect(graph.criticalPath.length).toBeGreaterThan(0);
+    it('should respect limit parameter', () => {
+      engine.parseAndStore(SAMPLE_LLM_RESPONSE, 'test 1');
+      engine.parseAndStore(SAMPLE_LLM_RESPONSE, 'test 2');
+      engine.parseAndStore(SAMPLE_LLM_RESPONSE, 'test 3');
+      const items = engine.list(undefined, 2);
+      expect(items.length).toBe(2);
     });
   });
 
-  describe('validatePlan', () => {
-    it('should validate a correct plan', async () => {
-      const input: DecomposeInput = {
-        prompt: 'Create a simple module',
-      };
-
-      const plan = await engine.decompose(input);
-      const validation = engine.validatePlan(plan.planId);
-
-      expect(validation.isValid).toBe(true);
-      expect(validation.coherenceScore).toBeGreaterThan(50);
-      expect(validation.completenessScore).toBeGreaterThan(50);
+  describe('exportMarkdown', () => {
+    it('should export markdown with Four Directions', () => {
+      const stored = engine.parseAndStore(SAMPLE_LLM_RESPONSE, 'test');
+      const md = engine.exportMarkdown(stored.id);
+      expect(md).not.toBeNull();
+      expect(md).toContain('# Prompt Decomposition');
+      expect(md).toContain('EAST');
+      expect(md).toContain('SOUTH');
+      expect(md).toContain('WEST');
+      expect(md).toContain('NORTH');
+      expect(md).toContain('Primary Intent');
+      expect(md).toContain('Ambiguity Flags');
+      expect(md).toContain('Action Stack');
     });
 
-    it('should return invalid for non-existent plan', () => {
-      const validation = engine.validatePlan('non-existent-id');
-
-      expect(validation.isValid).toBe(false);
-      expect(validation.issues.length).toBeGreaterThan(0);
-    });
-  });
-
-  describe('workflow storage', () => {
-    it('should store and retrieve workflows', async () => {
-      const input: DecomposeInput = {
-        prompt: 'Create a test module',
-      };
-
-      const plan = await engine.decompose(input);
-      const retrieved = engine.getPlan(plan.planId);
-
-      expect(retrieved).toBeDefined();
-      expect(retrieved?.planId).toBe(plan.planId);
-    });
-
-    it('should list workflows', async () => {
-      const input: DecomposeInput = {
-        prompt: 'Create module A',
-      };
-
-      await engine.decompose(input);
-      const workflows = engine.listWorkflows();
-
-      expect(workflows.length).toBeGreaterThan(0);
+    it('should return null for non-existent ID', () => {
+      expect(engine.exportMarkdown('non-existent')).toBeNull();
     });
   });
 });
 
-describe('Medicine Wheel Alignment', () => {
-  let engine: PdeEngine;
-
-  beforeEach(() => {
-    engine = new PdeEngine();
+describe('Parser', () => {
+  it('should parse valid JSON response', () => {
+    const result = parseDecompositionResponse(SAMPLE_LLM_RESPONSE);
+    expect(result.primary.action).toBe('create');
+    expect(result.secondary).toHaveLength(2);
+    expect(result.ambiguities).toHaveLength(2);
   });
 
-  it('should align ANALYSIS with EAST direction', async () => {
-    const plan = await engine.decompose({ prompt: 'Analyze the system architecture' });
-    
-    const eastStage = plan.stages.find(s => s.direction === 'EAST');
-    expect(eastStage).toBeDefined();
-    expect(eastStage?.tasks.some(t => t.description.includes('analyze'))).toBe(true);
+  it('should parse JSON in markdown code block', () => {
+    const wrapped = '```json\n' + SAMPLE_LLM_RESPONSE + '\n```';
+    const result = parseDecompositionResponse(wrapped);
+    expect(result.primary.action).toBe('create');
   });
 
-  it('should align CREATION with SOUTH direction', async () => {
-    const plan = await engine.decompose({ prompt: 'Create a new component' });
-    
-    const southStage = plan.stages.find(s => s.direction === 'SOUTH');
-    expect(southStage).toBeDefined();
-    expect(southStage?.tasks.some(t => t.description.includes('create'))).toBe(true);
+  it('should parse JSON with surrounding text', () => {
+    const withText = 'Here is the decomposition:\n' + SAMPLE_LLM_RESPONSE + '\nDone!';
+    const result = parseDecompositionResponse(withText);
+    expect(result.primary.action).toBe('create');
   });
 
-  it('should align VALIDATION with WEST direction', async () => {
-    const plan = await engine.decompose({ prompt: 'Test the integration' });
-    
-    const westStage = plan.stages.find(s => s.direction === 'WEST');
-    expect(westStage).toBeDefined();
-    expect(westStage?.tasks.some(t => t.description.includes('test'))).toBe(true);
+  it('should throw PDEParseError for non-JSON', () => {
+    expect(() => parseDecompositionResponse('This is not JSON')).toThrow(PDEParseError);
   });
 
-  it('should align COMMUNICATION with NORTH direction', async () => {
-    const plan = await engine.decompose({ prompt: 'Report the findings and document everything' });
-    
-    const northStage = plan.stages.find(s => s.direction === 'NORTH');
-    expect(northStage).toBeDefined();
+  it('should throw for missing primary field', () => {
+    expect(() => parseDecompositionResponse(JSON.stringify({ secondary: [] }))).toThrow(PDEParseError);
+  });
+
+  it('should default confidence to 0.8 if missing', () => {
+    const minimal = JSON.stringify({ primary: { action: 'test', target: 'thing' } });
+    const result = parseDecompositionResponse(minimal);
+    expect(result.primary.confidence).toBe(0.8);
+    expect(result.primary.urgency).toBe('session');
+  });
+
+  it('should normalize missing arrays to empty', () => {
+    const minimal = JSON.stringify({ primary: { action: 'test', target: 'thing', confidence: 0.9, urgency: 'session' } });
+    const result = parseDecompositionResponse(minimal);
+    expect(result.secondary).toEqual([]);
+    expect(result.ambiguities).toEqual([]);
+    expect(result.actionStack).toEqual([]);
+    expect(result.directions.east).toEqual([]);
+  });
+});
+
+describe('actionStackToMarkdown', () => {
+  it('should format action stack as checklist', () => {
+    const items = [
+      { text: 'First task', completed: false, dependency: null },
+      { text: 'Second task', completed: true, dependency: 'First task' },
+    ];
+    const md = actionStackToMarkdown(items);
+    expect(md).toContain('- [ ] First task');
+    expect(md).toContain('- [x] Second task (depends on: First task)');
+  });
+});
+
+describe('Prompts', () => {
+  it('should build system prompt with all components', () => {
+    const prompt = buildSystemPrompt(DEFAULT_OPTIONS);
+    expect(prompt).toContain('Prompt Decomposition Engine');
+    expect(prompt).toContain('EAST');
+    expect(prompt).toContain('implicit');
+    expect(prompt).toContain('dependency');
+    expect(prompt).toContain('ambiguities');
+  });
+
+  it('should format user message', () => {
+    const msg = formatUserMessage('Build a chat app');
+    expect(msg).toContain('Build a chat app');
+  });
+});
+
+describe('Markdown Export', () => {
+  it('should contain all sections', () => {
+    const result = parseDecompositionResponse(SAMPLE_LLM_RESPONSE);
+    const md = decompositionToMarkdown(result, 'test prompt');
+    expect(md).toContain('# Prompt Decomposition');
+    expect(md).toContain('## Directions');
+    expect(md).toContain('## Primary Intent');
+    expect(md).toContain('## Secondary Intents');
+    expect(md).toContain('## Context Requirements');
+    expect(md).toContain('## Four Directions Analysis');
+    expect(md).toContain('## Action Stack');
+    expect(md).toContain('## Ambiguity Flags');
+    expect(md).toContain('## Expected Outputs');
+  });
+
+  it('should include direction emojis', () => {
+    const result = parseDecompositionResponse(SAMPLE_LLM_RESPONSE);
+    const md = decompositionToMarkdown(result);
+    expect(md).toContain('🌅');
+    expect(md).toContain('🔥');
+    expect(md).toContain('🌊');
+    expect(md).toContain('❄️');
   });
 });

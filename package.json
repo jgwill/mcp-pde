@@ -1,7 +1,7 @@
 {
   "name": "@iaip/mcp-pde",
-  "version": "1.0.0",
-  "description": "Prompt Decomposition Engine as MCP Server - Transforms complex prompts into ceremonially-aligned execution plans",
+  "version": "2.0.0",
+  "description": "Prompt Decomposition Engine as MCP Server - LLM-driven decomposition into structured JSON with Four Directions mapping, ambiguity detection, and .pde/ storage",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
