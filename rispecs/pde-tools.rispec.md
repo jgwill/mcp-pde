@@ -1,212 +1,179 @@
 # PDE-MCP Tools Specification
-> MCP Tool Definitions for Prompt Decomposition Engine
+> MCP Tool Definitions for Prompt Decomposition Engine v2
 
-**Version**: 1.0.0
-**Document ID**: pde-mcp-tools-v1
+**Version**: 2.0.0
+**Document ID**: pde-mcp-tools-v2
 
 ## Creative Intent
 
 ### Desired Outcome
-LLM agents **create** actionable execution plans through well-defined MCP tools that transform complex prompts into structured, ceremonially-aligned workflows.
+LLM agents **create** structured decompositions of complex prompts through a two-step LLM-driven workflow: first building a system prompt, then parsing and persisting the LLM response.
+
+## Two-Step Workflow
+
+```
+pde_decompose(prompt) → { systemPrompt, userMessage }
+  ↓ agent sends to LLM
+pde_parse_response(llm_response, original_prompt) → StoredDecomposition
+```
 
 ## Tool Definitions
 
 ### Tool 1: `pde_decompose`
 
-**Purpose**: Decompose a complex prompt into a structured execution plan
+**Purpose**: Build system prompt + user message for LLM-driven prompt decomposition
 
-**What Users Create**: A complete, transparent workflow from an ambiguous request
+**What Users Create**: A ready-to-send LLM payload that produces a DecompositionResult JSON
 
 **Input Schema**:
 ```typescript
 interface DecomposeInput {
-  prompt: string;                    // Raw user prompt to decompose
-  context?: {
-    files?: string[];                // Relevant file paths
-    previousResults?: string[];      // Prior execution results
-    userPreferences?: Record<string, string>;
-  };
+  prompt: string;          // The complex prompt to decompose
   options?: {
-    medicineWheelEnabled?: boolean;  // Enable ceremonial alignment (default: true)
-    maxDepth?: number;               // Max dependency graph depth (default: 5)
-    parallelization?: boolean;       // Enable parallel task detection (default: true)
+    extractImplicit?: boolean;  // Extract implicit intents (default: true)
+    mapDependencies?: boolean;  // Map dependencies between actions (default: true)
   };
 }
 ```
 
-**Output Schema**:
+**Output** (JSON):
 ```typescript
-interface ExecutionPlan {
-  workflowId: string;                // Unique identifier
-  overallIntention: string;          // Summary of what user wants to create
-  stages: PdeStage[];                // Ceremonially-ordered stages
-  metadata: {
-    totalTasks: number;
-    parallelizableTasks: number;
-    estimatedComplexity: 'low' | 'medium' | 'high';
-    requiredTools: string[];
-  };
+{
+  instructions: string;    // "Send systemPrompt + userMessage to your LLM, then call pde_parse_response"
+  systemPrompt: string;    // Full system prompt instructing LLM to produce DecompositionResult JSON
+  userMessage: string;     // Formatted user message: 'Prompt to decompose: "<prompt>"'
+  original_prompt: string; // Echo of the original prompt
 }
 ```
 
 **Behavior**:
-1. Runs 5-layer decomposition pipeline
-2. Returns structured plan without executing
-3. Enables user review before execution
+1. Merges options with defaults (`extractImplicit: true`, `mapDependencies: true`)
+2. Builds system prompt via `buildSystemPrompt(opts)`
+3. Returns both messages — does NOT call any LLM itself
 
 ---
 
-### Tool 2: `pde_execute_stage`
+### Tool 2: `pde_parse_response`
 
-**Purpose**: Execute a single stage from a decomposed plan
+**Purpose**: Parse an LLM response into a structured DecompositionResult and persist it to `.pde/`
 
-**What Users Create**: Completed stage outcomes with checkpoint data
+**What Users Create**: A stored decomposition as `.pde/<uuid>.json` + `.pde/<uuid>.md`
 
 **Input Schema**:
 ```typescript
-interface ExecuteStageInput {
-  workflowId: string;                // Reference to decomposed plan
-  stageId: string;                   // Stage to execute
+interface ParseResponseInput {
+  llm_response: string;    // Raw LLM response text containing DecompositionResult JSON
+  original_prompt: string; // The original prompt that was decomposed
+  workdir?: string;        // Working directory for .pde/ storage (defaults to cwd)
   options?: {
-    dryRun?: boolean;                // Preview commands without executing
-    verbose?: boolean;               // Detailed output
+    extractImplicit?: boolean;
+    mapDependencies?: boolean;
   };
 }
 ```
 
-**Output Schema**:
+**Output** (`StoredDecomposition`):
 ```typescript
-interface StageResult {
-  stageId: string;
-  direction: MedicineWheelDirection;
-  status: 'completed' | 'partial' | 'failed';
-  completedTasks: TaskResult[];
-  failedTasks?: FailedTask[];
-  checkpoint: CheckpointData;
+interface StoredDecomposition {
+  id: string;              // UUID
+  timestamp: string;       // ISO timestamp
+  prompt: string;          // Original prompt
+  result: DecompositionResult;
+  options: DecompositionOptions;
+  markdownPath?: string;   // Path to .pde/<id>.md
 }
+```
+
+**Behavior**:
+1. Calls `parseDecompositionResponse(llm_response)` — handles markdown code fences, raw JSON, substring extraction
+2. Generates UUID
+3. Saves to `.pde/<uuid>.json` (full StoredDecomposition)
+4. Exports `.pde/<uuid>.md` (git-diffable markdown with Four Directions headers)
+5. Returns the full StoredDecomposition
+
+---
+
+### Tool 3: `pde_get`
+
+**Purpose**: Retrieve a stored decomposition by ID from `.pde/`
+
+**What Users Create**: Access to a previously stored decomposition for review or re-export
+
+**Input Schema**:
+```typescript
+interface GetDecompositionInput {
+  id: string;       // Decomposition UUID
+  workdir?: string; // Working directory
+}
+```
+
+**Output**: Full `StoredDecomposition` JSON, or error if not found
+
+---
+
+### Tool 4: `pde_list`
+
+**Purpose**: List stored decompositions from `.pde/`
+
+**What Users Create**: Visibility into decomposition history
+
+**Input Schema**:
+```typescript
+interface ListDecompositionsInput {
+  workdir?: string;
+  limit?: number;   // Default: 10
+}
+```
+
+**Output** (summary array):
+```typescript
+Array<{
+  id: string;
+  timestamp: string;
+  primaryAction: string;       // "action target" from primary intent
+  secondaryCount: number;
+  ambiguityCount: number;
+  actionStackCount: number;
+}>
 ```
 
 ---
 
-### Tool 3: `pde_get_checkpoint`
+### Tool 5: `pde_export_markdown`
 
-**Purpose**: Retrieve checkpoint data for workflow recovery
+**Purpose**: Export a stored decomposition as a git-diffable markdown document with Four Directions headers
 
-**What Users Create**: Recovery context enabling seamless resume
-
-**Input Schema**:
-```typescript
-interface GetCheckpointInput {
-  workflowId: string;
-  stageId?: string;                  // Optional: specific stage
-}
-```
-
-**Output Schema**:
-```typescript
-interface CheckpointData {
-  workflowId: string;
-  lastCompletedStage: string;
-  lastCompletedTask: string;
-  contextSnapshot: Record<string, any>;
-  resumeInstructions: string;
-}
-```
-
----
-
-### Tool 4: `pde_resume_workflow`
-
-**Purpose**: Resume execution from a checkpoint after failure
-
-**What Users Create**: Continued progress from failure point
+**What Users Create**: A human-readable, editable document committed alongside code
 
 **Input Schema**:
 ```typescript
-interface ResumeWorkflowInput {
-  workflowId: string;
-  checkpointId: string;
-  modifications?: {
-    skipTasks?: string[];            // Tasks to skip
-    retryStrategy?: 'same' | 'alternative';
-  };
+interface ExportMarkdownInput {
+  id: string;       // Decomposition UUID
+  workdir?: string;
 }
 ```
 
-**Output Schema**:
-```typescript
-interface ResumeResult {
-  resumed: boolean;
-  fromStage: string;
-  fromTask: string;
-  remainingStages: string[];
-}
+**Output**: Markdown string with structure:
+```
+# Prompt Decomposition
+## Directions          — Four Directions header block
+## Original Prompt
+## Primary Intent
+## Secondary Intents
+## Context Requirements
+## Four Directions Analysis
+## Action Stack        — ordered checklist with direction + dependency
+## Ambiguity Flags
+## Expected Outputs
 ```
 
----
-
-### Tool 5: `pde_validate_plan`
-
-**Purpose**: Validate an execution plan for completeness and coherence
-
-**What Users Create**: Confidence in plan quality before execution
-
-**Input Schema**:
-```typescript
-interface ValidatePlanInput {
-  workflowId: string;
-}
-```
-
-**Output Schema**:
-```typescript
-interface ValidationResult {
-  isValid: boolean;
-  issues: ValidationIssue[];
-  suggestions: string[];
-  coherenceScore: number;           // 0-100
-  completenessScore: number;        // 0-100
-}
-```
-
----
-
-### Tool 6: `pde_list_workflows`
-
-**Purpose**: List active and completed workflows
-
-**What Users Create**: Visibility into workflow history
-
-**Input Schema**:
-```typescript
-interface ListWorkflowsInput {
-  status?: 'active' | 'completed' | 'failed' | 'all';
-  limit?: number;
-}
-```
-
-**Output Schema**:
-```typescript
-interface WorkflowList {
-  workflows: WorkflowSummary[];
-  total: number;
-}
-```
+**Note**: The markdown is also auto-written to `.pde/<id>.md` during `pde_parse_response`. This tool re-generates it on demand.
 
 ## Error Handling
 
-### Decomposition Errors
-- `PROMPT_TOO_VAGUE`: Prompt lacks actionable intent
-- `CIRCULAR_DEPENDENCY`: Dependency graph contains cycles
-- `UNSUPPORTED_INTENT`: Intent type not recognized
+Each tool returns `{ isError: true, content: [{ text: "..." }] }` on failure:
 
-### Execution Errors
-- `STAGE_NOT_FOUND`: Referenced stage doesn't exist
-- `WORKFLOW_NOT_FOUND`: Workflow ID invalid
-- `DEPENDENCY_FAILED`: Required prior task not completed
-
-### Recovery Strategies
-Each error includes:
-- Human-readable message
-- Suggested recovery action
-- Related checkpoint data (if available)
+- **Missing required parameter**: `"Missing required parameter: prompt"`
+- **Decomposition not found**: `"Decomposition <id> not found"`
+- **Parse failure**: Thrown as `PDEParseError` with description of what failed
+- **General errors**: Caught and returned as `"Error: <message>"`
