@@ -1,0 +1,55 @@
+# PDE-MCP — Prompt Decomposition Engine
+
+> A Model Context Protocol (MCP) server that decomposes complex LLM prompts into structured, ceremonially-aligned execution plans using Four Directions mapping, dependency resolution, and git-diffable markdown output.
+
+**Version:** 2.0.0
+**Language:** TypeScript (ES2022, ESM)
+**License:** MIT
+
+## Tools
+
+- [pde_decompose](./rispecs/pde-tools.rispec.md#tool-1-pde_decompose): Build system prompt + user message for LLM-driven prompt decomposition
+- [pde_parse_response](./rispecs/pde-tools.rispec.md#tool-2-pde_parse_response): Parse LLM response into structured DecompositionResult, persist to `.pde/`
+- [pde_get](./rispecs/pde-tools.rispec.md#tool-3-pde_get): Retrieve a stored decomposition by UUID
+- [pde_list](./rispecs/pde-tools.rispec.md#tool-4-pde_list): List stored decompositions with summary
+- [pde_export_markdown](./rispecs/pde-tools.rispec.md#tool-5-pde_export_markdown): Export decomposition as Four Directions markdown
+
+## Resources
+
+- [pde://schema/decomposition-result](./rispecs/pde-resources.rispec.md#resource-1): Canonical JSON schema for DecompositionResult
+- [pde://directions](./rispecs/pde-resources.rispec.md#resource-2): Four Directions metadata (name, emoji, color, description)
+
+## Prompts
+
+- [pde-decompose](./rispecs/pde-prompts.rispec.md): Reusable system prompt template that instructs any LLM to produce DecompositionResult JSON
+
+## Specifications (RISE Framework)
+
+- [Overview](./rispecs/pde-overview.rispec.md): Architecture, LLM-driven two-step pipeline, storage layout, integration patterns
+- [Tools](./rispecs/pde-tools.rispec.md): 5 MCP tool definitions with input/output schemas
+- [Data Models](./rispecs/pde-data-models.rispec.md): TypeScript interfaces for DecompositionResult, StoredDecomposition, Direction types
+- [Prompts](./rispecs/pde-prompts.rispec.md): System prompt template and options behavior
+- [Resources](./rispecs/pde-resources.rispec.md): Static MCP resources for schema and direction metadata
+
+## Key Concepts
+
+- **Two-Step Pipeline**: Engine builds prompts only — calling agent supplies their own LLM (Claude, Gemini, GPT)
+- **Four Directions**: East 🌅 (Vision) → South 🔥 (Analysis) → West 🌊 (Validation) → North ❄️ (Action)
+- **DecompositionResult**: Primary intent, secondary intents (explicit + implicit), context, outputs, direction map, action stack, ambiguity flags
+- **Git-Diffable Storage**: `.pde/<uuid>.json` + `.pde/<uuid>.md` — human-editable, version-controlled
+- **Implicit Intent Extraction**: Detects hedging language ("probably", "I assume", "somehow") and marks as `implicit: true`
+- **Dependency Mapping**: Action stack respects task ordering — parallel vs sequential execution
+
+## Integration
+
+- **Standalone MCP**: `node dist/index.js` — works with any MCP-compatible agent
+- **Miadi Platform**: Mirrors as `mcp-miadi-code-pde` with webhook dispatch to Miadi API + Redis storage
+- **Skills**: Powers `rise-pde-session` (decompose → commit → sleep → revise → execute) and `pde-review-companion` (human review during sleep window)
+- **Structural Thinking**: Complemented by `mcp-structural-thinking` for reactive pattern detection, three-universe validation, and structural observation
+
+## Related
+
+- [Structural Thinking MCP](https://llms.jgwill.com/llms-structural-thinking-opus-4-6.txt): Structural dynamics analysis tools
+- [Medicine Wheel](https://docs.medicine-wheel.jgwill.com/llms.txt): Four Directions ontology framework
+- [Miadi Platform](https://docs.miadi.jgwill.com/llms.txt): Narrative platform with PDE integration
+- [Creative Orientation Framework](https://llms.jgwill.com/llms-creative-orientation.txt): Foundation methodology
