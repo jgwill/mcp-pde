@@ -92,7 +92,8 @@ export function listDecompositions(workdir: string, limit?: number): StoredDecom
 
 /**
  * Convert a DecompositionResult to a git-diffable Markdown document.
- * Includes Four Directions header block for human orientation.
+ * IAIP canonical format: Four Directions as first section after title,
+ * centering relational/directional knowing before reductive intent extraction.
  */
 export function decompositionToMarkdown(result: DecompositionResult, prompt?: string): string {
   const lines: string[] = [];
@@ -100,14 +101,22 @@ export function decompositionToMarkdown(result: DecompositionResult, prompt?: st
   lines.push("# Prompt Decomposition");
   lines.push("");
 
-  // Four Directions header (the <MISSING> block from user's feedback)
-  lines.push("## Directions");
+  // Four Directions (IAIP canonical: first section — relational knowing before intent)
+  lines.push("## Four Directions");
   lines.push("");
   for (const dir of DIRECTIONS) {
     const meta = DIRECTION_META[dir];
-    lines.push(`- ${meta.emoji} **${dir.toUpperCase()}** — ${meta.name}: ${meta.desc}`);
+    const items = result.directions[dir];
+    if (items.length === 0) continue;
+    const subtitle = meta.name.charAt(0) + meta.name.slice(1).toLowerCase();
+    lines.push(`### ${meta.emoji} ${dir.toUpperCase()} — ${subtitle}`);
+    lines.push("");
+    for (const item of items) {
+      const tag = item.implicit ? " _(implicit)_" : "";
+      lines.push(`- ${item.text} [${Math.round(item.confidence * 100)}%]${tag}`);
+    }
+    lines.push("");
   }
-  lines.push("");
 
   // Original prompt (if provided)
   if (prompt) {
@@ -160,42 +169,7 @@ export function decompositionToMarkdown(result: DecompositionResult, prompt?: st
     }
   }
 
-  // Directions detail
-  lines.push("## Four Directions Analysis");
-  lines.push("");
-  for (const dir of DIRECTIONS) {
-    const meta = DIRECTION_META[dir];
-    const items = result.directions[dir];
-    if (items.length === 0) continue;
-    lines.push(`### ${meta.emoji} ${dir.toUpperCase()} — ${meta.name}`);
-    lines.push("");
-    for (const item of items) {
-      const tag = item.implicit ? " _(implicit)_" : "";
-      lines.push(`- ${item.text} [${Math.round(item.confidence * 100)}%]${tag}`);
-    }
-    lines.push("");
-  }
-
-  // Action Stack
-  if (result.actionStack.length > 0) {
-    lines.push("## Action Stack");
-    lines.push("");
-    lines.push(actionStackToMarkdown(result.actionStack));
-    lines.push("");
-  }
-
-  // Ambiguity Flags
-  if (result.ambiguities.length > 0) {
-    lines.push("## Ambiguity Flags");
-    lines.push("");
-    for (const a of result.ambiguities) {
-      lines.push(`- **"${a.text}"**`);
-      lines.push(`  - Suggestion: ${a.suggestion}`);
-    }
-    lines.push("");
-  }
-
-  // Expected Outputs
+  // Expected Outputs (IAIP canonical: before Action Stack)
   const out = result.outputs;
   if (out.artifacts.length || out.updates.length || out.communications.length) {
     lines.push("## Expected Outputs");
@@ -215,6 +189,25 @@ export function decompositionToMarkdown(result: DecompositionResult, prompt?: st
       out.communications.forEach((c) => lines.push(`- ${c}`));
       lines.push("");
     }
+  }
+
+  // Action Stack
+  if (result.actionStack.length > 0) {
+    lines.push("## Action Stack");
+    lines.push("");
+    lines.push(actionStackToMarkdown(result.actionStack));
+    lines.push("");
+  }
+
+  // Ambiguity Flags
+  if (result.ambiguities.length > 0) {
+    lines.push("## Ambiguity Flags");
+    lines.push("");
+    for (const a of result.ambiguities) {
+      lines.push(`- **"${a.text}"**`);
+      lines.push(`  - Suggestion: ${a.suggestion}`);
+    }
+    lines.push("");
   }
 
   return lines.join("\n");
