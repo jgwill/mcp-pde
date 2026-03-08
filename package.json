@@ -1,6 +1,6 @@
 {
   "name": "iaip-mcp-pde",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Prompt Decomposition Engine as MCP Server - LLM-driven decomposition into structured JSON with Four Directions mapping, ambiguity detection, and .pde/ storage",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
