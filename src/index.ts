@@ -1,10 +1,18 @@
+#!/usr/bin/env node
 /**
- * PDE-MCP v2 — Library Entry Point
- *
- * Re-exports core engine, parser, prompts, storage for programmatic use.
+ * PDE-MCP v2 Entry Point
+ * Starts the Model Context Protocol server for Prompt Decomposition Engine.
+ * 
+ * Also re-exports core engine, parser, prompts, storage for programmatic use.
  * CLI: ./cli.ts (bin: mcp-pde)
- * MCP: startServer() or `mcp-pde serve`
  */
+
+import { startServer } from './mcp-server.js';
+
+startServer().catch((error) => {
+  console.error('Failed to start PDE MCP server:', error);
+  process.exit(1);
+});
 
 // Re-export for library usage
 export { PdeEngine, PDEParseError } from './pde-engine.js';
