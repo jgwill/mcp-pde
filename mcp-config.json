@@ -2,7 +2,7 @@
   "mcpServers": {
     "pde": {
       "command": "node",
-      "args": ["dist/index.js"],
+      "args": ["dist/cli.js", "serve"],
       "env": {}
     }
   }
