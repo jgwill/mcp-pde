@@ -37,3 +37,4 @@
 - How and when this kinship description should be reviewed: When new integrations are added or when mia-code begins using PDE in production
 - Relational change log:
   - [2026-02-13] [copilot] — v2 rewrite: replaced regex-based engine with LLM-driven decomposition using IAIP/lib/pde canonical types; added .pde/ storage, markdown export, git-diff workflow
+  - [2026-03-21] [pi-mono] — CLI added (src/cli.ts) enabling full PDE from terminal via Anthropic API or agent binary. `.mw/east/` identified as directional workspace destination for decompositions. Migration path: `.pde/` → `.mw/east/`. KINSHIP upgraded. Convergence issue: miadisabelle/workspace-openclaw#28
