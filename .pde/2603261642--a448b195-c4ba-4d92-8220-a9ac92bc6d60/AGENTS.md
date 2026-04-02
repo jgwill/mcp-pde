@@ -21,6 +21,13 @@ APPENDIX
 
 ## RELATED
 
+
 ### `/a/src/sacredava/.pi/ceremony-observer/260326-c1da6f65/OVERNIGHT-RESUMPTION.md`
 
+* Does not seems relevant few days later....
+
+
+
+-----
+TODO : PLEASE  ADD IN HERE the part about renaming the output to <timestamp yyMMddHHmm>--<UUID parent PDE>/<UUID>.md/json and the fact that we would support 
 
