@@ -1,17 +1,25 @@
 /**
  * PDE Storage - .pde/ dot folder persistence
  * 
- * Stores decompositions as JSON files in .pde/ directory.
- * Exports markdown alongside JSON for human-in-the-loop editing via git diff.
+ * Stores decompositions as JSON + Markdown in .pde/ directory.
  * 
- * Storage layout:
+ * New folder-based layout (v2.1):
  *   .pde/
- *     <id>.json          - StoredDecomposition (full JSON)
- *     <id>.md            - Markdown export (human-editable, git-diffable)
+ *     <yyMMddHHmm>--<uuid>/
+ *       pde-<uuid>.json     - StoredDecomposition (full JSON)
+ *       pde-<uuid>.md       - Markdown export (human-editable, git-diffable)
+ *       <child-timestamp>--<child-uuid>/   - nested children
+ *         pde-<child-uuid>.json
+ *         pde-<child-uuid>.md
+ * 
+ * Legacy flat layout (still readable):
+ *   .pde/
+ *     <id>.json
+ *     <id>.md
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from "fs";
-import { join } from "path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from "fs";
+import { join, basename } from "path";
 import type {
   DecompositionResult,
   DecompositionOptions,
@@ -23,38 +31,109 @@ import { actionStackToMarkdown } from "./parser.js";
 
 const PDE_DIR = ".pde";
 
-function ensureDir(workdir: string): string {
-  const dir = join(workdir, PDE_DIR);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  return dir;
+function ensureDir(dirPath: string): void {
+  if (!existsSync(dirPath)) mkdirSync(dirPath, { recursive: true });
+}
+
+/** Generate timestamp in yyMMddHHmm format */
+function generateTimestamp(): string {
+  const now = new Date();
+  const yy = String(now.getFullYear()).slice(2);
+  const MM = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
+  const HH = String(now.getHours()).padStart(2, "0");
+  const mm = String(now.getMinutes()).padStart(2, "0");
+  return `${yy}${MM}${dd}${HH}${mm}`;
 }
 
 /**
- * Save a decomposition to .pde/ as JSON + Markdown.
+ * Find a PDE folder by UUID, searching recursively within .pde/.
+ * Returns the folder path containing the PDE files, or null.
+ */
+function findFolderByUuid(pdeRoot: string, uuid: string): string | null {
+  if (!existsSync(pdeRoot)) return null;
+
+  // Search for folder ending with --<uuid>
+  const suffix = `--${uuid}`;
+  
+  function searchDir(dir: string): string | null {
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      return null;
+    }
+    for (const entry of entries) {
+      const fullPath = join(dir, entry);
+      try {
+        if (!statSync(fullPath).isDirectory()) continue;
+      } catch {
+        continue;
+      }
+      if (entry.endsWith(suffix)) return fullPath;
+      // Recurse into subdirectories (parent folders may contain children)
+      const found = searchDir(fullPath);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  return searchDir(pdeRoot);
+}
+
+/**
+ * Save a decomposition to .pde/ as JSON + Markdown using folder-based layout.
  */
 export function saveDecomposition(
   workdir: string,
   id: string,
   prompt: string,
   result: DecompositionResult,
-  options: DecompositionOptions
+  options: DecompositionOptions,
+  parentPdeId?: string,
 ): StoredDecomposition {
-  const dir = ensureDir(workdir);
+  const pdeRoot = join(workdir, PDE_DIR);
+  ensureDir(pdeRoot);
+
+  const ts = generateTimestamp();
+  const folderName = `${ts}--${id}`;
+
+  let targetDir: string;
+  if (parentPdeId) {
+    // Find parent folder and nest inside it
+    const parentFolder = findFolderByUuid(pdeRoot, parentPdeId);
+    if (parentFolder) {
+      targetDir = join(parentFolder, folderName);
+    } else {
+      // Parent not found — store at top level (graceful fallback)
+      targetDir = join(pdeRoot, folderName);
+    }
+  } else {
+    targetDir = join(pdeRoot, folderName);
+  }
+
+  ensureDir(targetDir);
+
   const stored: StoredDecomposition = {
     id,
     timestamp: new Date().toISOString(),
     prompt,
     result,
     options,
+    folder_name: folderName,
   };
 
+  if (parentPdeId) {
+    stored.parent_pde_id = parentPdeId;
+  }
+
   // Save JSON
-  const jsonPath = join(dir, `${id}.json`);
+  const jsonPath = join(targetDir, `pde-${id}.json`);
   writeFileSync(jsonPath, JSON.stringify(stored, null, 2), "utf-8");
 
   // Save Markdown
-  const mdPath = join(dir, `${id}.md`);
-  const md = decompositionToMarkdown(result, prompt);
+  const mdPath = join(targetDir, `pde-${id}.md`);
+  const md = decompositionToMarkdown(result, prompt, parentPdeId);
   writeFileSync(mdPath, md, "utf-8");
   stored.markdownPath = mdPath;
 
@@ -63,31 +142,130 @@ export function saveDecomposition(
 
 /**
  * Load a decomposition from .pde/ by ID.
+ * Checks both new folder-based layout and legacy flat format.
  */
 export function loadDecomposition(workdir: string, id: string): StoredDecomposition | null {
-  const jsonPath = join(workdir, PDE_DIR, `${id}.json`);
-  if (!existsSync(jsonPath)) return null;
-  const raw = readFileSync(jsonPath, "utf-8");
-  return JSON.parse(raw) as StoredDecomposition;
+  const pdeRoot = join(workdir, PDE_DIR);
+
+  // 1. Try new folder-based format: .pde/*--<uuid>/pde-<uuid>.json (recursive)
+  const folder = findFolderByUuid(pdeRoot, id);
+  if (folder) {
+    const jsonPath = join(folder, `pde-${id}.json`);
+    if (existsSync(jsonPath)) {
+      const raw = readFileSync(jsonPath, "utf-8");
+      return JSON.parse(raw) as StoredDecomposition;
+    }
+  }
+
+  // 2. Try legacy flat format: .pde/<id>.json
+  const legacyPath = join(pdeRoot, `${id}.json`);
+  if (existsSync(legacyPath)) {
+    const raw = readFileSync(legacyPath, "utf-8");
+    return JSON.parse(raw) as StoredDecomposition;
+  }
+
+  return null;
 }
 
 /**
- * List all decompositions in .pde/.
+ * Recursively collect all PDE JSON files from a directory.
+ */
+function collectPdeFiles(dir: string): string[] {
+  const results: string[] = [];
+  if (!existsSync(dir)) return results;
+
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return results;
+  }
+
+  for (const entry of entries) {
+    const fullPath = join(dir, entry);
+    try {
+      const stat = statSync(fullPath);
+      if (stat.isFile() && entry.endsWith(".json")) {
+        // Match both pde-<uuid>.json (new) and <uuid>.json (legacy)
+        if (entry.startsWith("pde-") || !entry.startsWith(".")) {
+          results.push(fullPath);
+        }
+      } else if (stat.isDirectory() && !entry.startsWith(".")) {
+        results.push(...collectPdeFiles(fullPath));
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return results;
+}
+
+/**
+ * List all decompositions in .pde/ (flat list regardless of nesting).
  */
 export function listDecompositions(workdir: string, limit?: number): StoredDecomposition[] {
-  const dir = join(workdir, PDE_DIR);
-  if (!existsSync(dir)) return [];
+  const pdeRoot = join(workdir, PDE_DIR);
+  if (!existsSync(pdeRoot)) return [];
 
-  const files = readdirSync(dir)
-    .filter((f) => f.endsWith(".json"))
-    .sort()
-    .reverse();
+  const jsonFiles = collectPdeFiles(pdeRoot);
 
-  const limited = limit ? files.slice(0, limit) : files;
-  return limited.map((f) => {
-    const raw = readFileSync(join(dir, f), "utf-8");
-    return JSON.parse(raw) as StoredDecomposition;
-  });
+  const items: StoredDecomposition[] = [];
+  for (const filePath of jsonFiles) {
+    try {
+      const raw = readFileSync(filePath, "utf-8");
+      items.push(JSON.parse(raw) as StoredDecomposition);
+    } catch {
+      // Skip malformed files
+    }
+  }
+
+  // Sort by timestamp descending
+  items.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
+
+  return limit ? items.slice(0, limit) : items;
+}
+
+/**
+ * List children of a specific parent PDE.
+ */
+export function listChildren(workdir: string, parentId: string): StoredDecomposition[] {
+  const pdeRoot = join(workdir, PDE_DIR);
+  const parentFolder = findFolderByUuid(pdeRoot, parentId);
+  if (!parentFolder) return [];
+
+  const children: StoredDecomposition[] = [];
+  let entries: string[];
+  try {
+    entries = readdirSync(parentFolder);
+  } catch {
+    return [];
+  }
+
+  for (const entry of entries) {
+    const childDir = join(parentFolder, entry);
+    try {
+      if (!statSync(childDir).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    // Look for pde-*.json inside the child folder
+    const childFiles = collectPdeFiles(childDir);
+    for (const filePath of childFiles) {
+      try {
+        const raw = readFileSync(filePath, "utf-8");
+        const stored = JSON.parse(raw) as StoredDecomposition;
+        if (stored.parent_pde_id === parentId) {
+          children.push(stored);
+        }
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  children.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
+  return children;
 }
 
 /**
@@ -95,11 +273,17 @@ export function listDecompositions(workdir: string, limit?: number): StoredDecom
  * IAIP canonical format: Four Directions as first section after title,
  * centering relational/directional knowing before reductive intent extraction.
  */
-export function decompositionToMarkdown(result: DecompositionResult, prompt?: string): string {
+export function decompositionToMarkdown(result: DecompositionResult, prompt?: string, parentPdeId?: string): string {
   const lines: string[] = [];
 
   lines.push("# Prompt Decomposition");
   lines.push("");
+
+  // Parent reference (when present)
+  if (parentPdeId) {
+    lines.push(`**Parent PDE:** \`${parentPdeId}\``);
+    lines.push("");
+  }
 
   // Four Directions (IAIP canonical: first section — relational knowing before intent)
   lines.push("## Four Directions");

@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { PdeEngine } from '../src/pde-engine.js';
 import { parseDecompositionResponse, actionStackToMarkdown, PDEParseError } from '../src/parser.js';
 import { buildSystemPrompt, formatUserMessage } from '../src/prompts.js';
-import { decompositionToMarkdown, saveDecomposition, loadDecomposition, listDecompositions } from '../src/storage.js';
+import { decompositionToMarkdown, saveDecomposition, loadDecomposition, listDecompositions, listChildren } from '../src/storage.js';
 import { DEFAULT_OPTIONS, DIRECTION_META, DIRECTIONS } from '../src/types.js';
 import type { DecompositionResult } from '../src/types.js';
 import { existsSync, mkdirSync, rmSync } from 'fs';
@@ -103,13 +103,15 @@ describe('PdeEngine', () => {
     it('should parse LLM response and store in .pde/', () => {
       const stored = engine.parseAndStore(SAMPLE_LLM_RESPONSE, 'Create a user auth system');
       expect(stored.id).toBeDefined();
+      expect(stored.folder_name).toBeDefined();
       expect(stored.result.primary.action).toBe('create');
       expect(stored.result.secondary).toHaveLength(2);
       expect(stored.result.ambiguities).toHaveLength(2);
       expect(stored.result.actionStack).toHaveLength(5);
-      // Check files exist
-      expect(existsSync(join(testDir, '.pde', `${stored.id}.json`))).toBe(true);
-      expect(existsSync(join(testDir, '.pde', `${stored.id}.md`))).toBe(true);
+      // Check folder-based files exist
+      const folderPath = join(testDir, '.pde', stored.folder_name!);
+      expect(existsSync(join(folderPath, `pde-${stored.id}.json`))).toBe(true);
+      expect(existsSync(join(folderPath, `pde-${stored.id}.md`))).toBe(true);
     });
 
     it('should parse JSON wrapped in markdown code blocks', () => {
@@ -247,11 +249,10 @@ describe('Markdown Export', () => {
     const result = parseDecompositionResponse(SAMPLE_LLM_RESPONSE);
     const md = decompositionToMarkdown(result, 'test prompt');
     expect(md).toContain('# Prompt Decomposition');
-    expect(md).toContain('## Directions');
+    expect(md).toContain('## Four Directions');
     expect(md).toContain('## Primary Intent');
     expect(md).toContain('## Secondary Intents');
     expect(md).toContain('## Context Requirements');
-    expect(md).toContain('## Four Directions Analysis');
     expect(md).toContain('## Action Stack');
     expect(md).toContain('## Ambiguity Flags');
     expect(md).toContain('## Expected Outputs');
@@ -264,5 +265,67 @@ describe('Markdown Export', () => {
     expect(md).toContain('🔥');
     expect(md).toContain('🌊');
     expect(md).toContain('❄️');
+  });
+
+  it('should include parent_pde_id when provided', () => {
+    const result = parseDecompositionResponse(SAMPLE_LLM_RESPONSE);
+    const md = decompositionToMarkdown(result, 'test', 'parent-uuid-123');
+    expect(md).toContain('**Parent PDE:** `parent-uuid-123`');
+  });
+});
+
+describe('Parent-Child PDE', () => {
+  let engine: PdeEngine;
+  let testDir: string;
+
+  beforeEach(() => {
+    testDir = join(os.tmpdir(), `pde-parent-test-${Date.now()}`);
+    mkdirSync(testDir, { recursive: true });
+    engine = new PdeEngine(testDir);
+  });
+
+  afterEach(() => {
+    if (existsSync(testDir)) {
+      rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  it('should store child inside parent folder', () => {
+    const parent = engine.parseAndStore(SAMPLE_LLM_RESPONSE, 'parent prompt');
+    const child = engine.parseAndStore(SAMPLE_LLM_RESPONSE, 'child prompt', undefined, testDir, parent.id);
+
+    expect(child.parent_pde_id).toBe(parent.id);
+    expect(child.folder_name).toBeDefined();
+
+    // Verify child is retrievable
+    const retrieved = engine.get(child.id);
+    expect(retrieved).not.toBeNull();
+    expect(retrieved!.parent_pde_id).toBe(parent.id);
+  });
+
+  it('should list children of a parent', () => {
+    const parent = engine.parseAndStore(SAMPLE_LLM_RESPONSE, 'parent prompt');
+    engine.parseAndStore(SAMPLE_LLM_RESPONSE, 'child 1', undefined, testDir, parent.id);
+    engine.parseAndStore(SAMPLE_LLM_RESPONSE, 'child 2', undefined, testDir, parent.id);
+
+    const children = engine.listChildren(parent.id);
+    expect(children.length).toBe(2);
+    expect(children.every(c => c.parent_pde_id === parent.id)).toBe(true);
+  });
+
+  it('should include all items in flat list', () => {
+    const parent = engine.parseAndStore(SAMPLE_LLM_RESPONSE, 'parent');
+    engine.parseAndStore(SAMPLE_LLM_RESPONSE, 'child', undefined, testDir, parent.id);
+
+    const all = engine.list();
+    expect(all.length).toBe(2);
+  });
+
+  it('should gracefully handle non-existent parent', () => {
+    const child = engine.parseAndStore(SAMPLE_LLM_RESPONSE, 'orphan child', undefined, testDir, 'non-existent-parent-id');
+    expect(child.parent_pde_id).toBe('non-existent-parent-id');
+    // Should still be stored (at top level)
+    const retrieved = engine.get(child.id);
+    expect(retrieved).not.toBeNull();
   });
 });

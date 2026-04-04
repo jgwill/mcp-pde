@@ -115,6 +115,10 @@ export interface StoredDecomposition {
   options: DecompositionOptions;
   /** Path to the exported markdown file, if any */
   markdownPath?: string;
+  /** UUID of parent PDE (for parent-child relationships) */
+  parent_pde_id?: string;
+  /** Folder name, e.g. "2604041200--83a2d7f9-..." */
+  folder_name?: string;
 }
 
 // ============================================================================
@@ -126,6 +130,8 @@ export interface DecomposeInput {
   options?: Partial<DecompositionOptions>;
   /** Working directory for .pde/ storage. Defaults to cwd. */
   workdir?: string;
+  /** UUID of parent PDE for parent-child nesting */
+  parent_pde_id?: string;
 }
 
 export interface GetDecompositionInput {
@@ -136,6 +142,8 @@ export interface GetDecompositionInput {
 export interface ListDecompositionsInput {
   workdir?: string;
   limit?: number;
+  /** Filter to children of a specific parent PDE */
+  parent_id?: string;
 }
 
 export interface ExportMarkdownInput {

@@ -68,6 +68,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
               mapDependencies: { type: 'boolean', default: true, description: 'Map dependencies between actions' },
             },
           },
+          parent_pde_id: { type: 'string', description: 'UUID of parent PDE for parent-child nesting' },
         },
         required: ['prompt'],
       },
@@ -81,6 +82,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           llm_response: { type: 'string', description: 'The raw LLM response text containing the DecompositionResult JSON' },
           original_prompt: { type: 'string', description: 'The original user prompt that was decomposed' },
           workdir: { type: 'string', description: 'Working directory for .pde/ storage (defaults to cwd)' },
+          parent_pde_id: { type: 'string', description: 'UUID of parent PDE for parent-child nesting' },
           options: {
             type: 'object',
             properties: {
@@ -112,6 +114,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           workdir: { type: 'string', description: 'Working directory' },
           limit: { type: 'number', default: 10 },
+          parent_id: { type: 'string', description: 'Filter to children of a specific parent PDE UUID' },
         },
       },
     },
@@ -149,22 +152,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               systemPrompt,
               userMessage,
               original_prompt: input.prompt,
+              ...(input.parent_pde_id ? { parent_pde_id: input.parent_pde_id } : {}),
             }, null, 2),
           }],
         };
       }
 
       case 'pde_parse_response': {
-        const { llm_response, original_prompt, workdir, options } = args as {
+        const { llm_response, original_prompt, workdir, options, parent_pde_id } = args as {
           llm_response: string;
           original_prompt: string;
           workdir?: string;
           options?: { extractImplicit?: boolean; mapDependencies?: boolean };
+          parent_pde_id?: string;
         };
         if (!llm_response || !original_prompt) {
           return { content: [{ type: 'text', text: 'Missing required: llm_response and original_prompt' }], isError: true };
         }
-        const stored = engine.parseAndStore(llm_response, original_prompt, options, workdir);
+        const stored = engine.parseAndStore(llm_response, original_prompt, options, workdir, parent_pde_id);
         return {
           content: [{ type: 'text', text: JSON.stringify(stored, null, 2) }],
         };
@@ -180,15 +185,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'pde_list': {
-        const { workdir, limit } = (args || {}) as ListDecompositionsInput;
-        const items = engine.list(workdir, limit);
-        const summary = items.map(d => ({
+        const { workdir, limit, parent_id } = (args || {}) as ListDecompositionsInput;
+        const items = parent_id
+          ? engine.listChildren(parent_id, workdir)
+          : engine.list(workdir, limit);
+        const limited = limit && !parent_id ? items.slice(0, limit) : items;
+        const summary = limited.map(d => ({
           id: d.id,
           timestamp: d.timestamp,
           primaryAction: `${d.result.primary.action} ${d.result.primary.target}`,
           secondaryCount: d.result.secondary.length,
           ambiguityCount: d.result.ambiguities.length,
           actionStackCount: d.result.actionStack.length,
+          ...(d.parent_pde_id ? { parent_pde_id: d.parent_pde_id } : {}),
+          ...(d.folder_name ? { folder_name: d.folder_name } : {}),
         }));
         return { content: [{ type: 'text', text: JSON.stringify(summary, null, 2) }] };
       }

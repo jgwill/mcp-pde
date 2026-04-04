@@ -22,7 +22,7 @@ import {
 } from './types.js';
 import { buildSystemPrompt, formatUserMessage } from './prompts.js';
 import { parseDecompositionResponse, PDEParseError } from './parser.js';
-import { saveDecomposition, loadDecomposition, listDecompositions, decompositionToMarkdown } from './storage.js';
+import { saveDecomposition, loadDecomposition, listDecompositions, listChildren, decompositionToMarkdown } from './storage.js';
 
 export class PdeEngine {
   private defaultWorkdir: string;
@@ -53,13 +53,14 @@ export class PdeEngine {
     llmResponse: string,
     originalPrompt: string,
     options?: Partial<DecompositionOptions>,
-    workdir?: string
+    workdir?: string,
+    parentPdeId?: string,
   ): StoredDecomposition {
     const opts: DecompositionOptions = { ...DEFAULT_OPTIONS, ...options };
     const result = parseDecompositionResponse(llmResponse);
     const id = uuidv4();
     const dir = workdir || this.defaultWorkdir;
-    return saveDecomposition(dir, id, originalPrompt, result, opts);
+    return saveDecomposition(dir, id, originalPrompt, result, opts, parentPdeId);
   }
 
   /**
@@ -84,12 +85,19 @@ export class PdeEngine {
   }
 
   /**
+   * List children of a specific parent PDE.
+   */
+  listChildren(parentId: string, workdir?: string): StoredDecomposition[] {
+    return listChildren(workdir || this.defaultWorkdir, parentId);
+  }
+
+  /**
    * Export a decomposition to markdown.
    */
   exportMarkdown(id: string, workdir?: string): string | null {
     const stored = this.get(id, workdir);
     if (!stored) return null;
-    return decompositionToMarkdown(stored.result, stored.prompt);
+    return decompositionToMarkdown(stored.result, stored.prompt, stored.parent_pde_id);
   }
 }
 

@@ -41,6 +41,7 @@ COMMANDS:
 OPTIONS:
   --workdir, -w <path>   Working directory for .pde/ storage (default: cwd)
   --model, -m <model>    Claude model (default: claude-sonnet-4-20250514)
+  --parent, -p <uuid>    Parent PDE UUID for parent-child nesting
   --no-implicit          Don't extract implicit intents
   --no-deps              Don't map dependencies
   --json                 Output raw JSON instead of formatted
@@ -227,9 +228,9 @@ function formatDecomposition(stored: any, json: boolean): string {
 
 async function main(): Promise<void> {
   const argv = minimist(process.argv.slice(2), {
-    alias: { h: 'help', w: 'workdir', m: 'model', l: 'limit', f: 'file' },
+    alias: { h: 'help', w: 'workdir', m: 'model', l: 'limit', f: 'file', p: 'parent' },
     boolean: ['help', 'json', 'no-implicit', 'no-deps'],
-    string: ['workdir', 'model', 'file', 'prompt'],
+    string: ['workdir', 'model', 'file', 'prompt', 'parent'],
   });
 
   if (argv.help || argv._.length === 0) {
@@ -257,16 +258,19 @@ async function main(): Promise<void> {
 
         const fullOpts = { ...DEFAULT_OPTIONS, ...opts };
         const { systemPrompt, userMessage } = engine.buildPrompt(prompt, opts);
+        const parentPdeId: string | undefined = argv.parent || undefined;
 
         console.error(`🧠 Decomposing with ${model}...`);
         console.error(`📁 Storing in ${resolve(workdir, '.pde/')}`);
+        if (parentPdeId) console.error(`🔗 Parent PDE: ${parentPdeId}`);
 
         const llmResponse = await callClaude(systemPrompt, userMessage, model);
-        const stored = engine.parseAndStore(llmResponse, prompt, opts, workdir);
+        const stored = engine.parseAndStore(llmResponse, prompt, opts, workdir, parentPdeId);
 
         console.error(`✅ Stored: ${stored.id}`);
-        console.error(`📄 ${resolve(workdir, '.pde', stored.id + '.json')}`);
-        console.error(`📝 ${resolve(workdir, '.pde', stored.id + '.md')}`);
+        if (stored.folder_name) {
+          console.error(`📂 Folder: ${stored.folder_name}`);
+        }
 
         console.log(formatDecomposition(stored, !!argv.json));
 
@@ -285,7 +289,8 @@ async function main(): Promise<void> {
         }
         const responseText = readFileSync(resolve(filePath), 'utf-8');
         const originalPrompt = argv.prompt || '(prompt not provided)';
-        const stored = engine.parseAndStore(responseText, originalPrompt, opts, workdir);
+        const parentPdeId: string | undefined = argv.parent || undefined;
+        const stored = engine.parseAndStore(responseText, originalPrompt, opts, workdir, parentPdeId);
 
         console.error(`✅ Parsed & stored: ${stored.id}`);
         console.log(formatDecomposition(stored, !!argv.json));
@@ -318,9 +323,14 @@ async function main(): Promise<void> {
       case 'list':
       case 'ls': {
         const limit = argv.limit || 10;
-        const items = engine.list(workdir, limit);
+        const parentId: string | undefined = argv.parent || undefined;
+        const items = parentId
+          ? engine.listChildren(parentId, workdir)
+          : engine.list(workdir, limit);
         if (items.length === 0) {
-          console.log(`No decompositions found in ${resolve(workdir, '.pde/')}`);
+          console.log(parentId
+            ? `No children found for parent ${parentId} in ${resolve(workdir, '.pde/')}`
+            : `No decompositions found in ${resolve(workdir, '.pde/')}`);
           break;
         }
 
