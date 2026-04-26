@@ -25,8 +25,19 @@
     "medicine-wheel",
     "ceremonial-technology"
   ],
-  "author": "Indigenous-AI Collaborative Platform",
+  "author": "Guillaume Descoteaux-Isabelle <jgi@jgwill.com>",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jgwill/mcp-pde.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jgwill/mcp-pde/issues"
+  },
+  "homepage": "https://github.com/jgwill/mcp-pde#readme",
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",
     "@modelcontextprotocol/sdk": "^1.27.1",
