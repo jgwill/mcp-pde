@@ -27,9 +27,10 @@ const HELP = `
 🧠 mcp-pde — Prompt Decomposition Engine CLI
 
 USAGE:
-  mcp-pde <command> [options]
+  mcp-pde [command] [options]
 
 COMMANDS:
+  (none)                 Start MCP server (stdio transport)
   decompose <text|->     Decompose prompt via Claude API (full end-to-end)
   parse <file>           Parse raw LLM response JSON into PDE & store
   build-prompt <text>    Output system+user prompt pair (for piping)
@@ -233,9 +234,14 @@ async function main(): Promise<void> {
     string: ['workdir', 'model', 'file', 'prompt', 'parent'],
   });
 
-  if (argv.help || argv._.length === 0) {
+  if (argv.help) {
     console.log(HELP);
     process.exit(0);
+  }
+
+  if (argv._.length === 0) {
+    await startServer();
+    return;
   }
 
   const command = argv._[0];
